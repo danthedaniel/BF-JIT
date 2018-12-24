@@ -1,5 +1,7 @@
 use libc::getchar;
 use std::char;
+use std::collections::HashSet;
+use std::fmt;
 use std::io::Write;
 
 /// BrainFuck instruction
@@ -23,10 +25,14 @@ impl Instr {
 
     /// Remove all non-control characters from the input.
     fn strip_comments(input: Vec<char>) -> Vec<char> {
-        let control_chars = ['+', '-', '>', '<', '.', ',', '[', ']'];
+        let control_chars: HashSet<char> = ['+', '-', '>', '<', '.', ',', '[', ']']
+            .iter()
+            .cloned()
+            .collect();
+
         input
             .into_iter()
-            .filter(|c| control_chars.iter().any(|x| x == c))
+            .filter(|c| control_chars.contains(c))
             .collect()
     }
 
@@ -79,6 +85,21 @@ impl Instr {
     }
 }
 
+impl fmt::Display for Instr {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Instr::Incr => write!(f, "INC"),
+            Instr::Decr => write!(f, "DEC"),
+            Instr::Next => write!(f, "NEXT"),
+            Instr::Prev => write!(f, "PREV"),
+            Instr::Print => write!(f, "PRINT"),
+            Instr::Read => write!(f, "READ"),
+            Instr::BeginLoop(end_pos) => write!(f, "BEGIN\t0x{:04X}", end_pos),
+            Instr::EndLoop(ret_pos) => write!(f, "END\t0x{:04X}", ret_pos),
+        }
+    }
+}
+
 /// BrainFuck virtual machine
 pub struct Fucker {
     program: Vec<Instr>,
@@ -121,7 +142,7 @@ impl Fucker {
                 }
                 Instr::Print => {
                     print!("{}", char::from_u32(current as u32).unwrap_or('?'));
-                    std::io::stdout().flush();
+                    std::io::stdout().flush().unwrap();
                 }
                 Instr::Read => {
                     self.memory[self.sp] = unsafe { getchar() } as u8;

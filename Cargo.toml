@@ -1,7 +1,10 @@
 [package]
 name = "fucker"
 version = "0.1.0"
-authors = ["teaearlgraycold <supacoofoo@gmail.com>"]
+authors = ["teaearlgraycold <teaearlgraycold@protonmail.com>"]
 
 [dependencies]
 libc = "0.2"
+docopt = "1"
+serde = "1.0"
+serde_derive = "1.0"
