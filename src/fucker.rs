@@ -29,20 +29,22 @@ fn human_format(num: f64) -> String {
 /// BrainFuck instruction
 #[derive(Copy, Clone, Debug)]
 pub enum Instr {
-    Incr,
-    Decr,
-    Next,
-    Prev,
+    Incr(u8),
+    Decr(u8),
+    Next(usize),
+    Prev(usize),
     Print,
     Read,
-    BeginLoop(usize),
-    EndLoop(usize),
+    BeginLoop(Option<usize>),
+    EndLoop(Option<usize>),
 }
 
 impl Instr {
     /// Convert a character slice into a Vec of Instr.
     pub fn parse(input: Vec<char>) -> Vec<Instr> {
-        Instr::parse_loop(Instr::strip_comments(input).as_slice(), None).0
+        let no_comments = Instr::strip_comments(input);
+        let optimized = Instr::optimize(no_comments);
+        Instr::parse_loops(optimized)
     }
 
     /// Remove all non-control characters from the input.
@@ -58,66 +60,108 @@ impl Instr {
             .collect()
     }
 
-    /// Parse a `[ ... ]` BrainFuck loop.
-    ///
-    /// * `input` - The entire input array.
-    /// * `ret` - Loop's starting position. Will be None when at the top level.
-    ///
-    /// Returns the instructions in the loop, as well as the position of the end
-    /// of the loop.
-    fn parse_loop(input: &[char], ret: Option<usize>) -> (Vec<Instr>, usize) {
-        let mut output = Vec::new();
-        let mut pos = ret.map(|x| x + 1).unwrap_or(0);
+    // Convert runs of +, -, < and > into bulk operations.
+    fn optimize(input: Vec<char>) -> Vec<Instr> {
+        let mut output: Vec<Instr> = Vec::new();
 
-        loop {
-            if pos >= input.len() {
-                break;
-            }
+        for c in input {
+            let len = output.len();
+            let last = if len > 0 { Some(output[len - 1]) } else { None };
 
-            match input[pos] {
-                '+' => output.push(Instr::Incr),
-                '-' => output.push(Instr::Decr),
-                '>' => output.push(Instr::Next),
-                '<' => output.push(Instr::Prev),
-                '.' => output.push(Instr::Print),
-                ',' => output.push(Instr::Read),
-                '[' => {
-                    let (inner_output, jump_loc) = Instr::parse_loop(input, Some(pos));
-
-                    output.push(Instr::BeginLoop(jump_loc));
-                    output.append(&mut inner_output.clone());
-
-                    pos = jump_loc;
+            // For each operator +, -, < and >, if the last instruction in the
+            // output Vec is the same, then increment that instruction instead
+            // of adding another identical instruction.
+            //
+            // All other operators are just appended to the Vec.
+            //
+            // Loop jump positions are left uncalculated, to be determined
+            // later.
+            match (c, last) {
+                // Incr
+                ('+', Some(Instr::Incr(n))) => {
+                    output[len - 1] = Instr::Incr(n + 1);
                 }
-                ']' => {
-                    output.push(Instr::EndLoop(
-                        // Will only panic if there are more closing braces than
-                        // opening braces.
-                        ret.unwrap_or_else(|| panic!("Stack underflow!")),
-                    ));
-                    return (output, pos);
+                ('+', _) => output.push(Instr::Incr(1)),
+                // Decr
+                ('-', Some(Instr::Decr(n))) => {
+                    output[len - 1] = Instr::Decr(n + 1);
                 }
-                _ => unreachable!(), // All comments should already be stripped
+                ('-', _) => output.push(Instr::Decr(1)),
+                // Next
+                ('>', Some(Instr::Next(n))) => {
+                    output[len - 1] = Instr::Next(n + 1);
+                }
+                ('>', _) => output.push(Instr::Next(1)),
+                // Prev
+                ('<', Some(Instr::Prev(n))) => {
+                    output[len - 1] = Instr::Prev(n + 1);
+                }
+                ('<', _) => output.push(Instr::Prev(1)),
+                // Other
+                ('.', _) => output.push(Instr::Print),
+                (',', _) => output.push(Instr::Read),
+                ('[', _) => output.push(Instr::BeginLoop(None)),
+                (']', _) => output.push(Instr::EndLoop(None)),
+                // Comments should already be stripped
+                (_, _) => unreachable!(),
             }
-
-            pos += 1;
         }
 
-        (output, pos)
+        output
+    }
+
+    // Resolve loop jump positions.
+    fn parse_loops(input: Vec<Instr>) -> Vec<Instr> {
+        let mut output = input.clone();
+        let mut stack: Vec<usize> = Vec::new();
+
+        for (pos, instr) in input.iter().enumerate() {
+            match instr {
+                Instr::BeginLoop(None) => stack.push(pos),
+                Instr::EndLoop(None) => {
+                    let ret_pos = stack.pop().unwrap_or_else(|| panic!("More ] than ["));
+                    output[pos] = Instr::EndLoop(Some(ret_pos));
+                    output[ret_pos] = Instr::BeginLoop(Some(pos));
+                }
+                _ => {}
+            }
+        }
+
+        if stack.len() > 0 {
+            panic!("More [ than ]");
+        }
+
+        output
+    }
+
+    // Number of BrainFuck instructions this represents.
+    pub fn ops(&self) -> u64 {
+        match self {
+            Instr::Incr(n) => *n as u64,
+            Instr::Decr(n) => *n as u64,
+            Instr::Next(n) => *n as u64,
+            Instr::Prev(n) => *n as u64,
+            Instr::Print => 1,
+            Instr::Read => 1,
+            Instr::BeginLoop(_) => 1,
+            Instr::EndLoop(_) => 1,
+        }
     }
 }
 
 impl fmt::Display for Instr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Instr::Incr => write!(f, "INC"),
-            Instr::Decr => write!(f, "DEC"),
-            Instr::Next => write!(f, "NEXT"),
-            Instr::Prev => write!(f, "PREV"),
+            Instr::Incr(n) => write!(f, "INC\t0x{:04X}", n),
+            Instr::Decr(n) => write!(f, "DEC\t0x{:04X}", n),
+            Instr::Next(n) => write!(f, "NEXT\t0x{:04X}", n),
+            Instr::Prev(n) => write!(f, "PREV\t0x{:04X}", n),
             Instr::Print => write!(f, "PRINT"),
             Instr::Read => write!(f, "READ"),
-            Instr::BeginLoop(end_pos) => write!(f, "BEGIN\t0x{:04X}", end_pos),
-            Instr::EndLoop(ret_pos) => write!(f, "END\t0x{:04X}", ret_pos),
+            Instr::BeginLoop(Some(end_pos)) => write!(f, "BEGIN\t0x{:04X}", end_pos),
+            Instr::BeginLoop(None) => write!(f, "BEGIN\tNULL"),
+            Instr::EndLoop(Some(ret_pos)) => write!(f, "END\t0x{:04X}", ret_pos),
+            Instr::EndLoop(None) => write!(f, "END\tNULL"),
         }
     }
 }
@@ -161,17 +205,17 @@ impl Fucker {
             let current = self.memory[self.dp];
 
             match instr {
-                Instr::Incr => {
-                    self.memory[self.dp] = current.wrapping_add(1);
+                Instr::Incr(n) => {
+                    self.memory[self.dp] = current.wrapping_add(n);
                 }
-                Instr::Decr => {
-                    self.memory[self.dp] = current.wrapping_sub(1);
+                Instr::Decr(n) => {
+                    self.memory[self.dp] = current.wrapping_sub(n);
                 }
-                Instr::Next => {
-                    self.dp += 1;
+                Instr::Next(n) => {
+                    self.dp += n;
                 }
-                Instr::Prev => {
-                    self.dp -= 1;
+                Instr::Prev(n) => {
+                    self.dp -= n;
                 }
                 Instr::Print => {
                     print!("{}", char::from_u32(current as u32).unwrap_or('?'));
@@ -180,19 +224,22 @@ impl Fucker {
                 Instr::Read => {
                     self.memory[self.dp] = unsafe { getchar() } as u8;
                 }
-                Instr::BeginLoop(end_pos) => {
+                Instr::BeginLoop(Some(end_pos)) => {
                     if current == 0 {
                         self.pc = end_pos;
                     }
                 }
-                Instr::EndLoop(ret_pos) => {
+                Instr::EndLoop(Some(ret_pos)) => {
                     if current != 0 {
                         self.pc = ret_pos;
                     }
                 }
+                // This would only happen if a BeginLoop or EndLoop is left with
+                // a None address inside.
+                _ => unreachable!(),
             }
 
-            ops += 1;
+            ops += instr.ops();
             self.pc += 1;
         }
     }
