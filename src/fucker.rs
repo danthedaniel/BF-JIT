@@ -3,6 +3,15 @@ use std::char;
 use std::collections::HashSet;
 use std::fmt;
 use std::io::Write;
+use std::time::SystemTime;
+
+/// Get seconds since the UNIX epoch.
+fn unix_time() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
 
 /// BrainFuck instruction
 #[derive(Copy, Clone, Debug)]
@@ -36,7 +45,7 @@ impl Instr {
             .collect()
     }
 
-    /// Parse a [ ... ] BrainFuck loop.
+    /// Parse a `[ ... ]` BrainFuck loop.
     ///
     /// * `input` - The entire input array.
     /// * `ret` - Loop's starting position. Will be None when at the top level.
@@ -75,7 +84,7 @@ impl Instr {
                     ));
                     return (output, pos);
                 }
-                _ => {} // All other characters are comments
+                _ => unreachable!(), // All comments should already be stripped
             }
 
             pos += 1;
@@ -100,52 +109,62 @@ impl fmt::Display for Instr {
     }
 }
 
+const FUCKER_MEM_SIZE: usize = 0x2000;
+
 /// BrainFuck virtual machine
 pub struct Fucker {
     program: Vec<Instr>,
-    memory: [u8; 0x2000],
+    memory: [u8; FUCKER_MEM_SIZE],
+    /// Program counter
     pc: usize,
-    sp: usize,
+    /// Data pointer
+    dp: usize,
 }
 
 impl Fucker {
     pub fn new(program: Vec<Instr>) -> Self {
         Fucker {
             program: program,
-            memory: [0; 0x2000],
+            memory: [0; FUCKER_MEM_SIZE],
             pc: 0,
-            sp: 0,
+            dp: 0,
         }
     }
 
     pub fn run(&mut self) {
+        let start = unix_time();
+        let mut ops = 0u64;
+
         loop {
             if self.pc >= self.program.len() {
+                let end = unix_time();
+                println!("{} seconds", end - start);
+                println!("{:.2} ops/second", ops as f64 / (end - start) as f64);
                 return;
             }
 
             let instr = self.program[self.pc];
-            let current = self.memory[self.sp];
+            let current = self.memory[self.dp];
 
             match instr {
                 Instr::Incr => {
-                    self.memory[self.sp] = current.wrapping_add(1);
+                    self.memory[self.dp] = current.wrapping_add(1);
                 }
                 Instr::Decr => {
-                    self.memory[self.sp] = current.wrapping_sub(1);
+                    self.memory[self.dp] = current.wrapping_sub(1);
                 }
                 Instr::Next => {
-                    self.sp += 1;
+                    self.dp += 1;
                 }
                 Instr::Prev => {
-                    self.sp -= 1;
+                    self.dp -= 1;
                 }
                 Instr::Print => {
                     print!("{}", char::from_u32(current as u32).unwrap_or('?'));
                     std::io::stdout().flush().unwrap();
                 }
                 Instr::Read => {
-                    self.memory[self.sp] = unsafe { getchar() } as u8;
+                    self.memory[self.dp] = unsafe { getchar() } as u8;
                 }
                 Instr::BeginLoop(end_pos) => {
                     if current == 0 {
@@ -159,6 +178,7 @@ impl Fucker {
                 }
             }
 
+            ops += 1;
             self.pc += 1;
         }
     }
