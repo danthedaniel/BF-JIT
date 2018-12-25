@@ -13,6 +13,19 @@ fn unix_time() -> u64 {
         .as_secs()
 }
 
+/// Append a number with an SI suffix.
+fn human_format(num: f64) -> String {
+    let suffixes = ['k', 'M', 'G', 'T'];
+    let index = (num.log10() / 3.0).floor() as usize - 1;
+
+    if let Some(suffix) = suffixes.get(index) {
+        let power = (index + 1) * 3;
+        format!("{:.2} {}", num / 10.0_f64.powi(power as i32), suffix)
+    } else {
+        format!("{:.2} ", num)
+    }
+}
+
 /// BrainFuck instruction
 #[derive(Copy, Clone, Debug)]
 pub enum Instr {
@@ -138,8 +151,9 @@ impl Fucker {
         loop {
             if self.pc >= self.program.len() {
                 let end = unix_time();
+                let rate = ops as f64 / (end - start) as f64;
                 println!("{} seconds", end - start);
-                println!("{:.2} ops/second", ops as f64 / (end - start) as f64);
+                println!("{}ops/second", human_format(rate));
                 return;
             }
 
