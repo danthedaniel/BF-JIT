@@ -54,6 +54,8 @@ fn main() {
 }
 
 fn display_program(program: Vec<fucker::Instr>) {
+    println!("Addr\tInstr\tOperands");
+
     for (pos, instr) in program.iter().enumerate() {
         println!("0x{:04X}\t{}", pos, instr);
     }

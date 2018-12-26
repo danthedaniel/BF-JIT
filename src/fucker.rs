@@ -29,13 +29,22 @@ fn human_format(num: f64) -> String {
 /// BrainFuck instruction
 #[derive(Copy, Clone, Debug)]
 pub enum Instr {
+    /// Add to the current memory cell.
     Incr(u8),
+    /// Remove from the current memory cell.
     Decr(u8),
+    /// Shift the data pointer to the right.
     Next(usize),
+    /// Shift the data pointer to the left.
     Prev(usize),
+    /// Display the current memory cell as an ASCII character.
     Print,
+    /// Read one character from stdin.
     Read,
+    /// If the current memory cell is 0, jump to the matching EndLoop (whos
+    /// index is held inside).
     BeginLoop(Option<usize>),
+    /// If the current memory cell is not 0, jump to the matching BeginLoop.
     EndLoop(Option<usize>),
 }
 
@@ -84,7 +93,7 @@ impl Instr {
         }
     }
 
-    // Convert runs of +, -, < and > into bulk operations.
+    /// Convert runs of +, -, < and > into bulk operations.
     fn optimize(input: Vec<char>) -> Vec<Instr> {
         let mut output: Vec<Instr> = Vec::new();
 
@@ -134,7 +143,7 @@ impl Instr {
         output
     }
 
-    // Resolve loop jump positions.
+    /// Resolve loop jump positions.
     fn parse_loops(input: Vec<Instr>) -> Vec<Instr> {
         let mut output = input.clone();
         let mut stack: Vec<usize> = Vec::new();
@@ -158,7 +167,7 @@ impl Instr {
         output
     }
 
-    // Number of BrainFuck instructions this represents.
+    /// Number of BrainFuck instructions this represents.
     pub fn ops(&self) -> u64 {
         match self {
             Instr::Incr(n) => *n as u64,
@@ -173,12 +182,17 @@ impl Instr {
     }
 }
 
+/// Display Instr similar to assembly.
 impl fmt::Display for Instr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
+            Instr::Incr(1) => write!(f, "INC"),
             Instr::Incr(n) => write!(f, "INC\t0x{:04X}", n),
+            Instr::Decr(1) => write!(f, "DEC"),
             Instr::Decr(n) => write!(f, "DEC\t0x{:04X}", n),
+            Instr::Next(1) => write!(f, "NEXT"),
             Instr::Next(n) => write!(f, "NEXT\t0x{:04X}", n),
+            Instr::Prev(1) => write!(f, "PREV"),
             Instr::Prev(n) => write!(f, "PREV\t0x{:04X}", n),
             Instr::Print => write!(f, "PRINT"),
             Instr::Read => write!(f, "READ"),
