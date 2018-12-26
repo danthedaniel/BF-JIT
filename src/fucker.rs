@@ -42,22 +42,46 @@ pub enum Instr {
 impl Instr {
     /// Convert a character slice into a Vec of Instr.
     pub fn parse(input: Vec<char>) -> Vec<Instr> {
+        if input.len() == 0 {
+            return Vec::new();
+        }
+
         let no_comments = Instr::strip_comments(input);
         let optimized = Instr::optimize(no_comments);
         Instr::parse_loops(optimized)
     }
 
-    /// Remove all non-control characters from the input.
+    /// Remove all non-control characters from the input as well as a starting
+    /// comment loop.
     fn strip_comments(input: Vec<char>) -> Vec<char> {
         let control_chars: HashSet<char> = ['+', '-', '>', '<', '.', ',', '[', ']']
             .iter()
             .cloned()
             .collect();
 
-        input
+        let comment_block_end = Instr::code_start(input.clone());
+
+        input[comment_block_end..]
             .into_iter()
+            .cloned()
             .filter(|c| control_chars.contains(c))
             .collect()
+    }
+
+    /// This returns the index first non-comment character in the program.
+    /// Many BrainFuck programs use a starting loop as a comment block.
+    fn code_start(input: Vec<char>) -> usize {
+        // If the code begins with a loop, treat it as a comment.
+        if input[0] == '[' {
+            // End of comment block is one character past the first `]`
+            input
+                .iter()
+                .position(|&c| c == ']')
+                .map(|x| x + 1)
+                .unwrap_or(0)
+        } else {
+            0 // No starting comment block
+        }
     }
 
     // Convert runs of +, -, < and > into bulk operations.
@@ -197,7 +221,7 @@ impl Fucker {
                 let end = unix_time();
                 let rate = ops as f64 / (end - start) as f64;
                 println!("{} seconds", end - start);
-                println!("{}ops/second", human_format(rate));
+                println!("{} ops/second", human_format(rate));
                 return;
             }
 
