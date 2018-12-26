@@ -204,12 +204,12 @@ impl fmt::Display for Instr {
     }
 }
 
-const FUCKER_MEM_SIZE: usize = 0x2000;
+const STARTING_MEM_SIZE: usize = 0x2000;
 
 /// BrainFuck virtual machine
 pub struct Fucker {
     program: Vec<Instr>,
-    memory: [u8; FUCKER_MEM_SIZE],
+    memory: Vec<u8>,
     /// Program counter
     pc: usize,
     /// Data pointer
@@ -220,7 +220,7 @@ impl Fucker {
     pub fn new(program: Vec<Instr>) -> Self {
         Fucker {
             program: program,
-            memory: [0; FUCKER_MEM_SIZE],
+            memory: vec![0u8; STARTING_MEM_SIZE],
             pc: 0,
             dp: 0,
         }
@@ -231,12 +231,22 @@ impl Fucker {
         let mut ops = 0u64;
 
         loop {
+            // Terminate if the program counter is outside of the program.
             if self.pc >= self.program.len() {
                 let end = unix_time();
                 let rate = ops as f64 / (end - start) as f64;
+
                 println!("{} seconds", end - start);
                 println!("{} ops/second", human_format(rate));
+
                 return;
+            }
+
+            // If the data pointer ends up outside of memory, double the memory
+            // capacity.
+            if self.dp >= self.memory.len() {
+                let new_len = self.memory.len() * 2;
+                self.memory.resize(new_len, 0);
             }
 
             let instr = self.program[self.pc];
