@@ -79,22 +79,22 @@ impl Instr {
             match (c, last) {
                 // Incr
                 ('+', Some(Instr::Incr(n))) => {
-                    output[len - 1] = Instr::Incr(n + 1);
+                    output[len - 1] = Instr::Incr(n.wrapping_add(1));
                 }
                 ('+', _) => output.push(Instr::Incr(1)),
                 // Decr
                 ('-', Some(Instr::Decr(n))) => {
-                    output[len - 1] = Instr::Decr(n + 1);
+                    output[len - 1] = Instr::Decr(n.wrapping_add(1));
                 }
                 ('-', _) => output.push(Instr::Decr(1)),
                 // Next
                 ('>', Some(Instr::Next(n))) => {
-                    output[len - 1] = Instr::Next(n + 1);
+                    output[len - 1] = Instr::Next(n.wrapping_add(1));
                 }
                 ('>', _) => output.push(Instr::Next(1)),
                 // Prev
                 ('<', Some(Instr::Prev(n))) => {
-                    output[len - 1] = Instr::Prev(n + 1);
+                    output[len - 1] = Instr::Prev(n.wrapping_add(1));
                 }
                 ('<', _) => output.push(Instr::Prev(1)),
                 // Other
