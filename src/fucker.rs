@@ -277,14 +277,13 @@ impl Fucker {
                         self.pc = end_pos;
                     }
                 }
+                Instr::BeginLoop(None) => unreachable!(),
                 Instr::EndLoop(Some(ret_pos)) => {
                     if current != 0 {
                         self.pc = ret_pos;
                     }
                 }
-                // This would only happen if a BeginLoop or EndLoop is left with
-                // a None address inside.
-                _ => unreachable!(),
+                Instr::EndLoop(None) => unreachable!(),
             }
 
             ops += instr.ops();
