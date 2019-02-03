@@ -99,7 +99,7 @@ impl Instr {
 
         for c in input {
             let len = output.len();
-            let last = if len > 0 { Some(output[len - 1]) } else { None };
+            let last = output.get(len - 1).map(|&x| x);
 
             // For each operator +, -, < and >, if the last instruction in the
             // output Vec is the same, then increment that instruction instead
