@@ -50,7 +50,7 @@ fn main() {
     }
 
     let mut fucker = Fucker::new(program);
-    fucker.run();
+    fucker.run(&mut std::io::stdout());
 }
 
 fn display_program(program: Vec<fucker::Instr>) {

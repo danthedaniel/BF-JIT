@@ -211,9 +211,9 @@ pub struct Fucker {
     program: Vec<Instr>,
     memory: Vec<u8>,
     /// Program counter
-    pc: usize,
+    pub pc: usize,
     /// Data pointer
-    dp: usize,
+    pub dp: usize,
 }
 
 impl Fucker {
@@ -226,68 +226,64 @@ impl Fucker {
         }
     }
 
-    pub fn run(&mut self) {
-        let start = unix_time();
-        let mut ops = 0u64;
+    /// Run VM to termination.
+    pub fn run(&mut self, out: &mut Write) {
+        while self.step(out) {}
+    }
 
-        loop {
-            // Terminate if the program counter is outside of the program.
-            if self.pc >= self.program.len() {
-                let end = unix_time();
-                let rate = ops as f64 / (end - start) as f64;
-
-                println!("{} seconds", end - start);
-                println!("{} ops/second", human_format(rate));
-
-                return;
-            }
-
-            // If the data pointer ends up outside of memory, double the memory
-            // capacity.
-            if self.dp >= self.memory.len() {
-                let new_len = self.memory.len() * 2;
-                self.memory.resize(new_len, 0);
-            }
-
-            let instr = self.program[self.pc];
-            let current = self.memory[self.dp];
-
-            match instr {
-                Instr::Incr(n) => {
-                    self.memory[self.dp] = current.wrapping_add(n);
-                }
-                Instr::Decr(n) => {
-                    self.memory[self.dp] = current.wrapping_sub(n);
-                }
-                Instr::Next(n) => {
-                    self.dp += n;
-                }
-                Instr::Prev(n) => {
-                    self.dp -= n;
-                }
-                Instr::Print => {
-                    print!("{}", char::from_u32(current as u32).unwrap_or('?'));
-                    std::io::stdout().flush().unwrap();
-                }
-                Instr::Read => {
-                    self.memory[self.dp] = unsafe { getchar() } as u8;
-                }
-                Instr::BeginLoop(Some(end_pos)) => {
-                    if current == 0 {
-                        self.pc = end_pos;
-                    }
-                }
-                Instr::BeginLoop(None) => unreachable!(),
-                Instr::EndLoop(Some(ret_pos)) => {
-                    if current != 0 {
-                        self.pc = ret_pos;
-                    }
-                }
-                Instr::EndLoop(None) => unreachable!(),
-            }
-
-            ops += instr.ops();
-            self.pc += 1;
+    /// Execute a single instruction on the VM.
+    ///
+    /// Returns false when the program has terminated.
+    pub fn step(&mut self, out: &mut Write) -> bool {
+        // Terminate if the program counter is outside of the program.
+        if self.pc >= self.program.len() {
+            return false;
         }
+        // If the data pointer ends up outside of memory, double the memory
+        // capacity.
+        if self.dp >= self.memory.len() {
+            let new_len = self.memory.len() * 2;
+            self.memory.resize(new_len, 0);
+        }
+
+        let instr = self.program[self.pc];
+        let current = self.memory[self.dp];
+
+        match instr {
+            Instr::Incr(n) => {
+                self.memory[self.dp] = current.wrapping_add(n);
+            }
+            Instr::Decr(n) => {
+                self.memory[self.dp] = current.wrapping_sub(n);
+            }
+            Instr::Next(n) => {
+                self.dp += n;
+            }
+            Instr::Prev(n) => {
+                self.dp -= n;
+            }
+            Instr::Print => {
+                out.write(&[current]).and_then(|_size| out.flush()).unwrap();
+            }
+            Instr::Read => {
+                self.memory[self.dp] = unsafe { getchar() } as u8;
+            }
+            Instr::BeginLoop(Some(end_pos)) => {
+                if current == 0 {
+                    self.pc = end_pos;
+                }
+            }
+            Instr::BeginLoop(None) => unreachable!(),
+            Instr::EndLoop(Some(ret_pos)) => {
+                if current != 0 {
+                    self.pc = ret_pos;
+                }
+            }
+            Instr::EndLoop(None) => unreachable!(),
+        }
+
+        self.pc += 1;
+
+        return true;
     }
 }
