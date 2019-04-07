@@ -187,9 +187,9 @@ impl fmt::Display for Instr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Instr::Incr(1) => write!(f, "INC"),
-            Instr::Incr(n) => write!(f, "INC\t0x{:04X}", n),
+            Instr::Incr(n) => write!(f, "ADD\t0x{:04X}", n),
             Instr::Decr(1) => write!(f, "DEC"),
-            Instr::Decr(n) => write!(f, "DEC\t0x{:04X}", n),
+            Instr::Decr(n) => write!(f, "SUB\t0x{:04X}", n),
             Instr::Next(1) => write!(f, "NEXT"),
             Instr::Next(n) => write!(f, "NEXT\t0x{:04X}", n),
             Instr::Prev(1) => write!(f, "PREV"),
