@@ -5,31 +5,36 @@ extern crate serde_derive;
 extern crate docopt;
 
 mod fucker;
+mod jit_memory;
+mod runnable;
 
-use docopt::Docopt;
-use fucker::{Fucker, Instr};
 use std::fs::File;
-use std::io;
 use std::io::Read;
 use std::process::exit;
+
+use docopt::Docopt;
+
+use fucker::Program;
 
 const USAGE: &'static str = "
 Fucker
 
 Usage:
-  fucker <program>
+  fucker [--jit] <program>
   fucker (-d | --debug) <program>
   fucker (-h | --help)
 
 Options:
   -h --help     Show this screen.
   -d --debug    Display intermediate language.
+  --jit         JIT compile the program before running (x86-64 only).
 ";
 
 #[derive(Debug, Deserialize)]
 struct Args {
     arg_program: String,
     flag_debug: bool,
+    flag_jit: bool,
 }
 
 fn main() {
@@ -38,33 +43,35 @@ fn main() {
         .unwrap_or_else(|e| e.exit());
 
     let program = read_file(&args.arg_program)
-        .map(|chars| Instr::parse(chars))
+        .and_then(|chars| Program::parse(chars))
         .unwrap_or_else(|e| {
-            eprintln!("Could not read file: {}", e);
+            eprintln!("Error: {}", e);
             exit(1)
         });
 
     if args.flag_debug {
-        display_program(program);
+        println!("{:?}", program);
+
         return;
     }
 
-    let mut fucker = Fucker::new(program);
-    fucker.run(&mut std::io::stdout());
+    let mut runnable = if args.flag_jit {
+        program.jit().unwrap_or_else(|| {
+            eprintln!("Error: Unsupported JIT architecture");
+            exit(1)
+        })
+    } else {
+        program.int()
+    };
+
+    runnable.run();
 }
 
-fn display_program(program: Vec<fucker::Instr>) {
-    println!("Addr\tInstr\tOperands");
-
-    for (pos, instr) in program.iter().enumerate() {
-        println!("0x{:04X}\t{}", pos, instr);
-    }
-}
-
-fn read_file(path: &str) -> io::Result<Vec<char>> {
-    let mut file = File::open(path)?;
+fn read_file(path: &str) -> Result<Vec<char>, String> {
+    let mut file = File::open(path).map_err(|_| format!("Could not open file {}", path))?;
     let mut buffer: String = String::new();
-    file.read_to_string(&mut buffer)?;
+    file.read_to_string(&mut buffer)
+        .map_err(|_| format!("Could not read file {}", path))?;
 
     Ok(buffer.chars().collect())
 }

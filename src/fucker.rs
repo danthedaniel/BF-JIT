@@ -1,33 +1,39 @@
-use libc::getchar;
 use std::char;
 use std::collections::HashSet;
 use std::fmt;
 use std::io::Write;
-use std::time::SystemTime;
+use std::mem;
+use std::ops::Index;
 
-/// Get seconds since the UNIX epoch.
-fn unix_time() -> u64 {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
+use libc::getchar;
+
+use jit_memory::JITMemory;
+use runnable::Runnable;
+
+/// Print a single byte to stdout.
+fn print(byte: u8) {
+    print!("{}", char::from_u32(byte as u32).unwrap_or('?'));
+    std::io::stdout().flush().unwrap();
 }
 
-/// Append a number with an SI suffix.
-fn human_format(num: f64) -> String {
-    let suffixes = ['k', 'M', 'G', 'T'];
-    let index = (num.log10() / 3.0).floor() as usize - 1;
-
-    if let Some(suffix) = suffixes.get(index) {
-        let power = (index + 1) * 3;
-        format!("{:.2} {}", num / 10.0_f64.powi(power as i32), suffix)
-    } else {
-        format!("{:.2} ", num)
-    }
+/// Read a single byte from stdin.
+fn read() -> u8 {
+    unsafe { getchar() as u8 }
 }
+
+/// BrainFuck instructions must all have the same size to simplify jumping.
+///
+/// This represents the max size a BrainFuck instruction could represent in the
+/// target architecture. If an instruction uses less than this many bytes it
+/// should be padded with NOPs.
+#[cfg(target_arch = "x86_64")]
+const BF_INSTR_SIZE: i32 = 22;
+
+#[cfg(not(target_arch = "x86_64"))]
+const BF_INSTR_SIZE: i32 = 0;
 
 /// BrainFuck instruction
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone)]
 pub enum Instr {
     /// Add to the current memory cell.
     Incr(u8),
@@ -49,15 +55,295 @@ pub enum Instr {
 }
 
 impl Instr {
-    /// Convert a character slice into a Vec of Instr.
-    pub fn parse(input: Vec<char>) -> Vec<Instr> {
-        if input.len() == 0 {
-            return Vec::new();
+    /// Convert an Instr into a sequence of executable bytes.
+    ///
+    /// r10 is used to hold the data pointer.
+    #[cfg(target_arch = "x86_64")]
+    pub fn jit(&self, this_pos: usize) -> Vec<u8> {
+        let mut bytes: Vec<u8> = Vec::new();
+
+        match self {
+            Instr::Incr(n) => {
+                // add    BYTE PTR [r10],n
+                bytes.push(0x41);
+                bytes.push(0x80);
+                bytes.push(0x02);
+                bytes.push(*n);
+            }
+            Instr::Decr(n) => {
+                // sub    BYTE PTR [r10],0xff
+                bytes.push(0x41);
+                bytes.push(0x80);
+                bytes.push(0x2a);
+                bytes.push(*n);
+            }
+            Instr::Next(n) => {
+                // add    r10,n
+
+                // HACK: Assumes usize won't be more than 32 bit...
+                let n_bytes: [u8; mem::size_of::<u32>()] = unsafe { mem::transmute(*n as u32) };
+
+                bytes.push(0x49);
+                bytes.push(0x81);
+                bytes.push(0xc2);
+                bytes.push(n_bytes[0]);
+                bytes.push(n_bytes[1]);
+                bytes.push(n_bytes[2]);
+                bytes.push(n_bytes[3]);
+            }
+            Instr::Prev(n) => {
+                // HACK: Assumes usize won't be more than 32 bit...
+                let n_bytes: [u8; mem::size_of::<u32>()] = unsafe { mem::transmute(*n as u32) };
+
+                // sub    r10,n
+                bytes.push(0x49);
+                bytes.push(0x81);
+                bytes.push(0xea);
+                bytes.push(n_bytes[0]);
+                bytes.push(n_bytes[1]);
+                bytes.push(n_bytes[2]);
+                bytes.push(n_bytes[3]);
+            }
+            Instr::Print => {
+                let print_ptr_bytes: [u8; mem::size_of::<(fn(u8) -> ())>()] =
+                    unsafe { mem::transmute(print as (fn(u8) -> ())) };
+
+                // Move the current memory cell into the first argument register
+                // movzx    rdi,BYTE PTR [r10]
+                bytes.push(0x49);
+                bytes.push(0x0f);
+                bytes.push(0xb6);
+                bytes.push(0x3a);
+
+                // Push data pointer onto stack
+                // push    r10
+                bytes.push(0x41);
+                bytes.push(0x52);
+
+                // Push return address onto stack
+                // push   rax
+                bytes.push(0x50);
+
+                // Copy function pointer for print() into rax
+                // movabs rax,print
+                bytes.push(0x48);
+                bytes.push(0xb8);
+                bytes.push(print_ptr_bytes[0]);
+                bytes.push(print_ptr_bytes[1]);
+                bytes.push(print_ptr_bytes[2]);
+                bytes.push(print_ptr_bytes[3]);
+                bytes.push(print_ptr_bytes[4]);
+                bytes.push(print_ptr_bytes[5]);
+                bytes.push(print_ptr_bytes[6]);
+                bytes.push(print_ptr_bytes[7]);
+
+                // Call print()
+                // call   rax
+                bytes.push(0xff);
+                bytes.push(0xd0);
+
+                // Pop return address from the stack
+                // pop    rax
+                bytes.push(0x58);
+
+                // Pop data pointer from the stack
+                // pop    r10
+                bytes.push(0x41);
+                bytes.push(0x5a);
+            }
+            Instr::Read => {
+                let read_ptr_bytes: [u8; mem::size_of::<(fn() -> u8)>()] =
+                    unsafe { mem::transmute(read as (fn() -> u8)) };
+
+                // Push data pointer onto stack
+                // push    r10
+                bytes.push(0x41);
+                bytes.push(0x52);
+
+                // Push return address onto stack
+                // push   rax
+                bytes.push(0x50);
+
+                // Copy function pointer for read() into rax
+                // movabs rax,read
+                bytes.push(0x48);
+                bytes.push(0xb8);
+                bytes.push(read_ptr_bytes[0]);
+                bytes.push(read_ptr_bytes[1]);
+                bytes.push(read_ptr_bytes[2]);
+                bytes.push(read_ptr_bytes[3]);
+                bytes.push(read_ptr_bytes[4]);
+                bytes.push(read_ptr_bytes[5]);
+                bytes.push(read_ptr_bytes[6]);
+                bytes.push(read_ptr_bytes[7]);
+
+                // Call read()
+                // call   rax
+                bytes.push(0xff);
+                bytes.push(0xd0);
+
+                // Copy return value into current cell.
+                // mov    BYTE PTR [r10],al
+                bytes.push(0x41);
+                bytes.push(0x88);
+                bytes.push(0x02);
+
+                // Pop return address from the stack.
+                // pop    rax
+                bytes.push(0x58);
+
+                // Pop data pointer from the stack.
+                // pop    r10
+                bytes.push(0x41);
+                bytes.push(0x5a);
+            }
+            Instr::BeginLoop(Some(pos)) => {
+                let begin_loop_size: i32 = 10; // Bytes
+
+                let offset = (*pos as i32 - this_pos as i32) * BF_INSTR_SIZE - begin_loop_size;
+                let offset_bytes: [u8; mem::size_of::<i32>()] = unsafe { mem::transmute(offset) };
+
+                // Check if the current memory cell equals zero.
+                // cmp    BYTE PTR [r10],0x0
+                bytes.push(0x41);
+                bytes.push(0x80);
+                bytes.push(0x3a);
+                bytes.push(0x00);
+
+                // Jump to the end of the loop if equal.
+                // je    offset
+                bytes.push(0x0f);
+                bytes.push(0x84);
+                bytes.push(offset_bytes[0]);
+                bytes.push(offset_bytes[1]);
+                bytes.push(offset_bytes[2]);
+                bytes.push(offset_bytes[3]);
+            }
+            Instr::EndLoop(Some(pos)) => {
+                let end_loop_size: i32 = 10; // Bytes
+
+                let offset = (*pos as i32 - this_pos as i32) * BF_INSTR_SIZE - end_loop_size;
+                let offset_bytes: [u8; mem::size_of::<i32>()] = unsafe { mem::transmute(offset) };
+
+                // Check if the current memory cell equals zero.
+                // cmp    BYTE PTR [r10],0x0
+                bytes.push(0x41);
+                bytes.push(0x80);
+                bytes.push(0x3a);
+                bytes.push(0x00);
+
+                // Jump back to the beginning of the loop if not equal.
+                // jne    offset
+                bytes.push(0x0f);
+                bytes.push(0x85);
+                bytes.push(offset_bytes[0]);
+                bytes.push(offset_bytes[1]);
+                bytes.push(offset_bytes[2]);
+                bytes.push(offset_bytes[3]);
+            }
+            _ => panic!(),
+        };
+
+        while bytes.len() < BF_INSTR_SIZE as usize {
+            // nop
+            bytes.push(0x90);
         }
 
-        let no_comments = Instr::strip_comments(input);
-        let optimized = Instr::optimize(no_comments);
-        Instr::parse_loops(optimized)
+        bytes
+    }
+}
+
+/// Display Instr similar to assembly.
+impl fmt::Debug for Instr {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Instr::Incr(1) => write!(f, "INC"),
+            Instr::Incr(n) => write!(f, "ADD\t0x{:04X}", n),
+            Instr::Decr(1) => write!(f, "DEC"),
+            Instr::Decr(n) => write!(f, "SUB\t0x{:04X}", n),
+            Instr::Next(1) => write!(f, "NEXT"),
+            Instr::Next(n) => write!(f, "NEXT\t0x{:04X}", n),
+            Instr::Prev(1) => write!(f, "PREV"),
+            Instr::Prev(n) => write!(f, "PREV\t0x{:04X}", n),
+            Instr::Print => write!(f, "PRINT"),
+            Instr::Read => write!(f, "READ"),
+            Instr::BeginLoop(Some(end_pos)) => write!(f, "BEGIN\t0x{:04X}", end_pos),
+            Instr::BeginLoop(None) => write!(f, "BEGIN\tNULL"),
+            Instr::EndLoop(Some(ret_pos)) => write!(f, "END\t0x{:04X}", ret_pos),
+            Instr::EndLoop(None) => write!(f, "END\tNULL"),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct Program {
+    pub data: Vec<Instr>,
+}
+
+impl Program {
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    /// Initialize a JIT compiled version of this program.
+    #[cfg(target_arch = "x86_64")]
+    pub fn jit(&self) -> Option<Box<Runnable>> {
+        let mut bytes = Vec::new();
+
+        // push   rbp
+        bytes.push(0x55);
+
+        // mov    rbp,rsp
+        bytes.push(0x48);
+        bytes.push(0x89);
+        bytes.push(0xe5);
+
+        // Store pointer to brainfuck memory (first argument) in r10
+        // mov    r10,rdi
+        bytes.push(0x49);
+        bytes.push(0x89);
+        bytes.push(0xfa);
+
+        for (index, instr) in self.data.iter().enumerate() {
+            bytes.extend(instr.jit(index));
+        }
+
+        // mov    rsp,rbp
+        bytes.push(0x48);
+        bytes.push(0x89);
+        bytes.push(0xec);
+
+        // pop    rbp
+        bytes.push(0x5d);
+
+        // ret
+        bytes.push(0xc3);
+
+        Some(Box::new(JITMemory::new(bytes)))
+    }
+
+    /// No-op version of jit() for unsupported architectures.
+    #[cfg(not(target_arch = "x86_64"))]
+    pub fn jit(&self) -> Option<Box<Runnable>> {
+        None
+    }
+
+    /// Initialize a BrainFuck interpretter that will use this program.
+    pub fn int(&self) -> Box<Runnable> {
+        Box::new(Fucker::new(self.clone()))
+    }
+
+    /// Convert a character slice into a Vec of Instr.
+    pub fn parse(input: Vec<char>) -> Result<Program, String> {
+        if input.len() == 0 {
+            return Ok(Program { data: Vec::new() });
+        }
+
+        let no_comments = Program::strip_comments(input);
+        let optimized = Program::optimize(no_comments);
+        let data = Program::parse_loops(optimized)?;
+
+        Ok(Program { data: data })
     }
 
     /// Remove all non-control characters from the input as well as a starting
@@ -68,7 +354,7 @@ impl Instr {
             .cloned()
             .collect();
 
-        let comment_block_end = Instr::code_start(input.clone());
+        let comment_block_end = Program::code_start(input.clone());
 
         input[comment_block_end..]
             .into_iter()
@@ -99,7 +385,7 @@ impl Instr {
 
         for c in input {
             let len = output.len();
-            let last = output.get(len - 1).map(|&x| x);
+            let last = output.get(len.checked_sub(1).unwrap_or(0)).map(|&x| x);
 
             // For each operator +, -, < and >, if the last instruction in the
             // output Vec is the same, then increment that instruction instead
@@ -136,7 +422,7 @@ impl Instr {
                 ('[', _) => output.push(Instr::BeginLoop(None)),
                 (']', _) => output.push(Instr::EndLoop(None)),
                 // Comments should already be stripped
-                (_, _) => unreachable!(),
+                (_, _) => {}
             }
         }
 
@@ -144,7 +430,7 @@ impl Instr {
     }
 
     /// Resolve loop jump positions.
-    fn parse_loops(input: Vec<Instr>) -> Vec<Instr> {
+    fn parse_loops(input: Vec<Instr>) -> Result<Vec<Instr>, String> {
         let mut output = input.clone();
         let mut stack: Vec<usize> = Vec::new();
 
@@ -152,7 +438,7 @@ impl Instr {
             match instr {
                 Instr::BeginLoop(None) => stack.push(pos),
                 Instr::EndLoop(None) => {
-                    let ret_pos = stack.pop().unwrap_or_else(|| panic!("More ] than ["));
+                    let ret_pos = stack.pop().ok_or(format!("ParseError: More ] than ["))?;
                     output[pos] = Instr::EndLoop(Some(ret_pos));
                     output[ret_pos] = Instr::BeginLoop(Some(pos));
                 }
@@ -161,54 +447,36 @@ impl Instr {
         }
 
         if stack.len() > 0 {
-            panic!("More [ than ]");
+            return Err(format!("ParseError: More [ than ]"));
         }
 
-        output
-    }
-
-    /// Number of BrainFuck instructions this represents.
-    pub fn ops(&self) -> u64 {
-        match self {
-            Instr::Incr(n) => *n as u64,
-            Instr::Decr(n) => *n as u64,
-            Instr::Next(n) => *n as u64,
-            Instr::Prev(n) => *n as u64,
-            Instr::Print => 1,
-            Instr::Read => 1,
-            Instr::BeginLoop(_) => 1,
-            Instr::EndLoop(_) => 1,
-        }
+        Ok(output)
     }
 }
 
-/// Display Instr similar to assembly.
-impl fmt::Display for Instr {
+impl Index<usize> for Program {
+    type Output = Instr;
+
+    fn index(&self, index: usize) -> &Instr {
+        &self.data[index]
+    }
+}
+
+impl fmt::Debug for Program {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            Instr::Incr(1) => write!(f, "INC"),
-            Instr::Incr(n) => write!(f, "ADD\t0x{:04X}", n),
-            Instr::Decr(1) => write!(f, "DEC"),
-            Instr::Decr(n) => write!(f, "SUB\t0x{:04X}", n),
-            Instr::Next(1) => write!(f, "NEXT"),
-            Instr::Next(n) => write!(f, "NEXT\t0x{:04X}", n),
-            Instr::Prev(1) => write!(f, "PREV"),
-            Instr::Prev(n) => write!(f, "PREV\t0x{:04X}", n),
-            Instr::Print => write!(f, "PRINT"),
-            Instr::Read => write!(f, "READ"),
-            Instr::BeginLoop(Some(end_pos)) => write!(f, "BEGIN\t0x{:04X}", end_pos),
-            Instr::BeginLoop(None) => write!(f, "BEGIN\tNULL"),
-            Instr::EndLoop(Some(ret_pos)) => write!(f, "END\t0x{:04X}", ret_pos),
-            Instr::EndLoop(None) => write!(f, "END\tNULL"),
+        write!(f, "Addr\tInstr\tOperands\n")?;
+
+        for (pos, instr) in self.data.iter().enumerate() {
+            write!(f, "0x{:04X}\t{:?}\n", pos, instr)?;
         }
+
+        write!(f, "\n")
     }
 }
-
-const STARTING_MEM_SIZE: usize = 0x2000;
 
 /// BrainFuck virtual machine
 pub struct Fucker {
-    program: Vec<Instr>,
+    program: Program,
     memory: Vec<u8>,
     /// Program counter
     pub pc: usize,
@@ -217,28 +485,24 @@ pub struct Fucker {
 }
 
 impl Fucker {
-    pub fn new(program: Vec<Instr>) -> Self {
+    pub fn new(program: Program) -> Self {
         Fucker {
             program: program,
-            memory: vec![0u8; STARTING_MEM_SIZE],
+            memory: vec![0u8; 0x4000],
             pc: 0,
             dp: 0,
         }
     }
 
-    /// Run VM to termination.
-    pub fn run(&mut self, out: &mut Write) {
-        while self.step(out) {}
-    }
-
     /// Execute a single instruction on the VM.
     ///
     /// Returns false when the program has terminated.
-    pub fn step(&mut self, out: &mut Write) -> bool {
+    pub fn step(&mut self) -> bool {
         // Terminate if the program counter is outside of the program.
         if self.pc >= self.program.len() {
             return false;
         }
+
         // If the data pointer ends up outside of memory, double the memory
         // capacity.
         if self.dp >= self.memory.len() {
@@ -263,10 +527,13 @@ impl Fucker {
                 self.dp -= n;
             }
             Instr::Print => {
-                out.write(&[current]).and_then(|_size| out.flush()).unwrap();
+                std::io::stdout()
+                    .write(&[current])
+                    .and_then(|_size| std::io::stdout().flush())
+                    .unwrap();
             }
             Instr::Read => {
-                self.memory[self.dp] = unsafe { getchar() } as u8;
+                self.memory[self.dp] = unsafe { getchar() as u8 };
             }
             Instr::BeginLoop(Some(end_pos)) => {
                 if current == 0 {
@@ -285,5 +552,11 @@ impl Fucker {
         self.pc += 1;
 
         return true;
+    }
+}
+
+impl Runnable for Fucker {
+    fn run(&mut self) {
+        while self.step() {}
     }
 }
