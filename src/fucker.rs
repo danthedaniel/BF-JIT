@@ -1,4 +1,5 @@
 use std::char;
+use std::cmp;
 use std::fmt;
 use std::io::Write;
 use std::mem;
@@ -492,10 +493,11 @@ impl Fucker {
             return false;
         }
 
-        // If the data pointer ends up outside of memory, double the memory
-        // capacity.
+        // If the data pointer ends up outside of memory, expand either to a
+        // double of the current memory size, or the new data pointer location
+        // (whichever is bigger).
         if self.dp >= self.memory.len() {
-            let new_len = self.memory.len() * 2;
+            let new_len = cmp::max(self.memory.len() * 2, self.dp);
             self.memory.resize(new_len, 0);
         }
 
@@ -513,13 +515,21 @@ impl Fucker {
                 self.dp += n;
             }
             Instr::Prev(n) => {
+                if self.dp < n {
+                    eprintln!("Attempted to point below memory location 0.");
+                    return false;
+                }
+
                 self.dp -= n;
             }
             Instr::Print => {
-                std::io::stdout()
+                if let Err(msg) = std::io::stdout()
                     .write(&[current])
                     .and_then(|_size| std::io::stdout().flush())
-                    .unwrap();
+                {
+                    eprintln!("{}", msg);
+                    return false;
+                }
             }
             Instr::Read => {
                 self.memory[self.dp] = unsafe { getchar() as u8 };
