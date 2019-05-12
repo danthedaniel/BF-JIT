@@ -20,6 +20,14 @@ fn read() -> u8 {
     unsafe { getchar() as u8 }
 }
 
+/// Convert an expression to a native-endian order byte array after a type cast.
+macro_rules! to_ne_bytes {
+    ($ptr:expr, $ptr_type:ty) => {{
+        let bytes: [u8; mem::size_of::<$ptr_type>()] = unsafe { mem::transmute($ptr as $ptr_type) };
+        bytes
+    }};
+}
+
 /// BrainFuck instructions must all have the same size to simplify jumping.
 ///
 /// This represents the max size a BrainFuck instruction could represent in the
@@ -80,7 +88,7 @@ impl Instr {
                 // add    r10,n
 
                 // HACK: Assumes usize won't be more than 32 bit...
-                let n_bytes: [u8; mem::size_of::<u32>()] = unsafe { mem::transmute(*n as u32) };
+                let n_bytes = (*n as u32).to_ne_bytes();
 
                 bytes.push(0x49);
                 bytes.push(0x81);
@@ -92,7 +100,7 @@ impl Instr {
             }
             Instr::Prev(n) => {
                 // HACK: Assumes usize won't be more than 32 bit...
-                let n_bytes: [u8; mem::size_of::<u32>()] = unsafe { mem::transmute(*n as u32) };
+                let n_bytes = (*n as u32).to_ne_bytes();
 
                 // sub    r10,n
                 bytes.push(0x49);
@@ -104,8 +112,7 @@ impl Instr {
                 bytes.push(n_bytes[3]);
             }
             Instr::Print => {
-                let print_ptr_bytes: [u8; mem::size_of::<(fn(u8) -> ())>()] =
-                    unsafe { mem::transmute(print as (fn(u8) -> ())) };
+                let print_ptr_bytes = to_ne_bytes!(print, fn(u8) -> ());
 
                 // Move the current memory cell into the first argument register
                 // movzx    rdi,BYTE PTR [r10]
@@ -151,8 +158,7 @@ impl Instr {
                 bytes.push(0x5a);
             }
             Instr::Read => {
-                let read_ptr_bytes: [u8; mem::size_of::<(fn() -> u8)>()] =
-                    unsafe { mem::transmute(read as (fn() -> u8)) };
+                let read_ptr_bytes = to_ne_bytes!(read, fn() -> u8);
 
                 // Push data pointer onto stack
                 // push    r10
@@ -200,7 +206,7 @@ impl Instr {
                 let begin_loop_size: i32 = 10; // Bytes
 
                 let offset = (*pos as i32 - this_pos as i32) * BF_INSTR_SIZE - begin_loop_size;
-                let offset_bytes: [u8; mem::size_of::<i32>()] = unsafe { mem::transmute(offset) };
+                let offset_bytes = offset.to_ne_bytes();
 
                 // Check if the current memory cell equals zero.
                 // cmp    BYTE PTR [r10],0x0
@@ -222,7 +228,7 @@ impl Instr {
                 let end_loop_size: i32 = 10; // Bytes
 
                 let offset = (*pos as i32 - this_pos as i32) * BF_INSTR_SIZE - end_loop_size;
-                let offset_bytes: [u8; mem::size_of::<i32>()] = unsafe { mem::transmute(offset) };
+                let offset_bytes = offset.to_ne_bytes();
 
                 // Check if the current memory cell equals zero.
                 // cmp    BYTE PTR [r10],0x0
