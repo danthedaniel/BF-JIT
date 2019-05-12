@@ -1,5 +1,4 @@
 use std::char;
-use std::collections::HashSet;
 use std::fmt;
 use std::io::Write;
 use std::mem;
@@ -339,28 +338,12 @@ impl Program {
             return Ok(Program { data: Vec::new() });
         }
 
-        let no_comments = Program::strip_comments(input);
-        let optimized = Program::optimize(no_comments);
+        let comment_block_end = Program::code_start(input.clone());
+
+        let optimized = Program::optimize(input[comment_block_end..].to_vec());
         let data = Program::parse_loops(optimized)?;
 
         Ok(Program { data: data })
-    }
-
-    /// Remove all non-control characters from the input as well as a starting
-    /// comment loop.
-    fn strip_comments(input: Vec<char>) -> Vec<char> {
-        let control_chars: HashSet<char> = ['+', '-', '>', '<', '.', ',', '[', ']']
-            .iter()
-            .cloned()
-            .collect();
-
-        let comment_block_end = Program::code_start(input.clone());
-
-        input[comment_block_end..]
-            .into_iter()
-            .cloned()
-            .filter(|c| control_chars.contains(c))
-            .collect()
     }
 
     /// This returns the index first non-comment character in the program.
@@ -421,7 +404,7 @@ impl Program {
                 (',', _) => output.push(Instr::Read),
                 ('[', _) => output.push(Instr::BeginLoop(None)),
                 (']', _) => output.push(Instr::EndLoop(None)),
-                // Comments should already be stripped
+                // All other characters are comments and will be ignored.
                 (_, _) => {}
             }
         }
