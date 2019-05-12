@@ -59,7 +59,7 @@ impl JITMemory {
 
 impl Runnable for JITMemory {
     fn run(&mut self) -> () {
-        let mut bf_mem = vec![0u8; 0x4000]; // Memory space used by BrainFuck
+        let mut bf_mem = vec![0u8; 30_000]; // Memory space used by BrainFuck
         let mem_ptr = bf_mem.as_mut_ptr();
         let func: (fn(*mut u8) -> ()) = unsafe { mem::transmute(self.contents.as_mut_ptr()) };
 
