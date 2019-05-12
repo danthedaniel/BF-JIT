@@ -45,7 +45,7 @@ fn main() {
     let program = read_file(&args.arg_program)
         .and_then(|chars| Program::parse(chars))
         .unwrap_or_else(|e| {
-            eprintln!("Error: {}", e);
+            eprintln!("Error occured while loading program: {}", e);
             exit(1)
         });
 
@@ -56,8 +56,8 @@ fn main() {
     }
 
     let mut runnable = if args.flag_jit {
-        program.jit().unwrap_or_else(|| {
-            eprintln!("Error: Unsupported JIT architecture");
+        program.jit().unwrap_or_else(|msg| {
+            eprintln!("Error occured while running program: {}", msg);
             exit(1)
         })
     } else {

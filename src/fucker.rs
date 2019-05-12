@@ -58,7 +58,7 @@ impl Instr {
     ///
     /// r10 is used to hold the data pointer.
     #[cfg(target_arch = "x86_64")]
-    pub fn jit(&self, this_pos: usize) -> Vec<u8> {
+    pub fn jit(&self, this_pos: usize) -> Result<Vec<u8>, String> {
         let mut bytes: Vec<u8> = Vec::new();
 
         match self {
@@ -240,7 +240,7 @@ impl Instr {
                 bytes.push(offset_bytes[2]);
                 bytes.push(offset_bytes[3]);
             }
-            _ => panic!(),
+            _ => Err(format!("Can not JIT {:?}", self))?,
         };
 
         while bytes.len() < BF_INSTR_SIZE as usize {
@@ -248,7 +248,7 @@ impl Instr {
             bytes.push(0x90);
         }
 
-        bytes
+        Ok(bytes)
     }
 }
 
@@ -286,7 +286,7 @@ impl Program {
 
     /// Initialize a JIT compiled version of this program.
     #[cfg(target_arch = "x86_64")]
-    pub fn jit(&self) -> Option<Box<Runnable>> {
+    pub fn jit(&self) -> Result<Box<Runnable>, String> {
         let mut bytes = Vec::new();
 
         // push   rbp
@@ -304,7 +304,7 @@ impl Program {
         bytes.push(0xfa);
 
         for (index, instr) in self.data.iter().enumerate() {
-            bytes.extend(instr.jit(index));
+            bytes.extend(instr.jit(index)?);
         }
 
         // mov    rsp,rbp
@@ -318,13 +318,13 @@ impl Program {
         // ret
         bytes.push(0xc3);
 
-        Some(Box::new(JITMemory::new(bytes)))
+        Ok(Box::new(JITMemory::new(bytes)))
     }
 
     /// No-op version of jit() for unsupported architectures.
     #[cfg(not(target_arch = "x86_64"))]
     pub fn jit(&self) -> Option<Box<Runnable>> {
-        None
+        Err("Unsupported JIT architecture.")
     }
 
     /// Initialize a BrainFuck interpretter that will use this program.
@@ -421,7 +421,7 @@ impl Program {
             match instr {
                 Instr::BeginLoop(None) => stack.push(pos),
                 Instr::EndLoop(None) => {
-                    let ret_pos = stack.pop().ok_or(format!("ParseError: More ] than ["))?;
+                    let ret_pos = stack.pop().ok_or(format!("More ] than ["))?;
                     output[pos] = Instr::EndLoop(Some(ret_pos));
                     output[ret_pos] = Instr::BeginLoop(Some(pos));
                 }
@@ -430,7 +430,7 @@ impl Program {
         }
 
         if stack.len() > 0 {
-            return Err(format!("ParseError: More [ than ]"));
+            return Err(format!("More [ than ]"));
         }
 
         Ok(output)
@@ -523,13 +523,15 @@ impl Fucker {
                     self.pc = end_pos;
                 }
             }
-            Instr::BeginLoop(None) => unreachable!(),
             Instr::EndLoop(Some(ret_pos)) => {
                 if current != 0 {
                     self.pc = ret_pos;
                 }
             }
-            Instr::EndLoop(None) => unreachable!(),
+            _ => {
+                eprintln!("Can not execute {:?}", instr);
+                return false;
+            }
         }
 
         self.pc += 1;
