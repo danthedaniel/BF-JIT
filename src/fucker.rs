@@ -79,7 +79,7 @@ impl Instr {
                 bytes.push(*n);
             }
             Instr::Decr(n) => {
-                // sub    BYTE PTR [r10],0xff
+                // sub    BYTE PTR [r10],n
                 bytes.push(0x41);
                 bytes.push(0x80);
                 bytes.push(0x2a);
@@ -334,7 +334,7 @@ impl Program {
         Err("Unsupported JIT architecture.")
     }
 
-    /// Initialize a BrainFuck interpretter that will use this program.
+    /// Initialize a BrainFuck interpreter that will use this program.
     pub fn int(&self) -> Box<Runnable> {
         Box::new(Fucker::new(self.clone()))
     }
@@ -383,7 +383,7 @@ impl Program {
             //
             // All other operators are just appended to the Vec.
             //
-            // Loop jump positions are left uncalculated, to be determined
+            // Loop jump positions are left un-calculated, to be determined
             // later.
             match (c, last) {
                 // Incr
