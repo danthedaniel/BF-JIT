@@ -330,8 +330,8 @@ impl Program {
 
     /// No-op version of jit() for unsupported architectures.
     #[cfg(not(target_arch = "x86_64"))]
-    pub fn jit(&self) -> Option<Box<Runnable>> {
-        Err("Unsupported JIT architecture.")
+    pub fn jit(&self) -> Result<Box<Runnable>, String> {
+        Err(format!("Unsupported JIT architecture."))
     }
 
     /// Initialize a BrainFuck interpreter that will use this program.
