@@ -247,7 +247,8 @@ impl Instr {
                 bytes.push(offset_bytes[2]);
                 bytes.push(offset_bytes[3]);
             }
-            _ => Err(format!("Can not JIT {:?}", self))?,
+            Instr::BeginLoop(None) => Err(format!("Can not JIT {:?}", self))?,
+            Instr::EndLoop(None) => Err(format!("Can not JIT {:?}", self))?,
         };
 
         while bytes.len() < BF_INSTR_SIZE as usize {
@@ -544,7 +545,11 @@ impl Fucker {
                     self.pc = ret_pos;
                 }
             }
-            _ => {
+            Instr::BeginLoop(None) => {
+                eprintln!("Can not execute {:?}", instr);
+                return false;
+            }
+            Instr::EndLoop(None) => {
                 eprintln!("Can not execute {:?}", instr);
                 return false;
             }
