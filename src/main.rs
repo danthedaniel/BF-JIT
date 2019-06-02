@@ -68,10 +68,11 @@ fn main() {
 }
 
 fn read_file(path: &str) -> Result<Vec<char>, String> {
-    let mut file = File::open(path).map_err(|_| format!("Could not open file {}", path))?;
+    let mut file = File::open(path).map_err(|e| format!("Could not open file {:?}", e))?;
     let mut buffer: String = String::new();
+
     file.read_to_string(&mut buffer)
-        .map_err(|_| format!("Could not read file {}", path))?;
+        .map_err(|e| format!("Could not read file {:?}", e))?;
 
     Ok(buffer.chars().collect())
 }
