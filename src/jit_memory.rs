@@ -2,6 +2,8 @@ use std::fmt;
 use std::mem;
 use std::ops::{Index, IndexMut};
 
+use libc::{_SC_PAGESIZE, sysconf};
+
 use runnable::Runnable;
 
 extern "C" {
@@ -16,7 +18,12 @@ fn int_ceil(numerator: usize, denominator: usize) -> usize {
     return (numerator / denominator + 1) * denominator;
 }
 
-const PAGE_SIZE: usize = 4096;
+// Dynamically read the page size. Unix only.
+fn get_page_size() -> usize {
+    unsafe {
+        sysconf(_SC_PAGESIZE) as usize
+    }
+}
 
 /// Container for executable bytes.
 pub struct JITMemory {
@@ -27,12 +34,12 @@ impl JITMemory {
     /// Clone a vector of bytes into new executable memory pages.
     pub fn new(source: Vec<u8>) -> JITMemory {
         let data_ptr: *mut u8;
-        let size = int_ceil(source.len(), PAGE_SIZE);
+        let size = int_ceil(source.len(), get_page_size());
 
         unsafe {
             let mut _ptr: *mut libc::c_void = mem::MaybeUninit::uninit().assume_init();
 
-            libc::posix_memalign(&mut _ptr, PAGE_SIZE, size);
+            libc::posix_memalign(&mut _ptr, get_page_size(), size);
             libc::mprotect(
                 _ptr,
                 size,
