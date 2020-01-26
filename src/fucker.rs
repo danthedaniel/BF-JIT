@@ -294,7 +294,7 @@ impl Program {
 
     /// Initialize a JIT compiled version of this program.
     #[cfg(target_arch = "x86_64")]
-    pub fn jit(&self) -> Result<Box<Runnable>, String> {
+    pub fn jit(&self) -> Result<Box<dyn Runnable>, String> {
         let mut bytes = Vec::new();
 
         // push   rbp
@@ -331,12 +331,12 @@ impl Program {
 
     /// No-op version of jit() for unsupported architectures.
     #[cfg(not(target_arch = "x86_64"))]
-    pub fn jit(&self) -> Result<Box<Runnable>, String> {
+    pub fn jit(&self) -> Result<Box<dyn Runnable>, String> {
         Err(format!("Unsupported JIT architecture."))
     }
 
     /// Initialize a BrainFuck interpreter that will use this program.
-    pub fn int(&self) -> Box<Runnable> {
+    pub fn int(&self) -> Box<dyn Runnable> {
         Box::new(Fucker::new(self.clone()))
     }
 
