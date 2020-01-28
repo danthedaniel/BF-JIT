@@ -6,3 +6,9 @@ pub trait Runnable {
     /// Invoke this type.
     fn run(&mut self) -> ();
 }
+
+mod fucker;
+mod jit_memory;
+
+pub use self::fucker::Fucker;
+pub use self::jit_memory::JITMemory;

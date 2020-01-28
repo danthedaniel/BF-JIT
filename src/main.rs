@@ -4,8 +4,7 @@ extern crate libc;
 extern crate serde_derive;
 extern crate docopt;
 
-mod fucker;
-mod jit_memory;
+mod parser;
 mod runnable;
 
 use std::fs::File;
@@ -14,7 +13,7 @@ use std::process::exit;
 
 use docopt::Docopt;
 
-use fucker::Program;
+use parser::AST;
 
 const USAGE: &'static str = "
 Fucker
@@ -43,7 +42,8 @@ fn main() {
         .unwrap_or_else(|e| e.exit());
 
     let program = read_file(&args.arg_program)
-        .and_then(|chars| Program::parse(chars))
+        .and_then(|chars| AST::from_char_vec(chars))
+        .map(|ast| ast.to_program())
         .unwrap_or_else(|e| {
             eprintln!("Error occurred while loading program: {}", e);
             exit(1)

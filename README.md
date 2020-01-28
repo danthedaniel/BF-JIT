@@ -1,7 +1,8 @@
 BrainFuck
 ===
 
-BrainFuck interpreter/optimizing JIT compiler written in rust.
+A very over-engineered BrainFuck interpreter/optimizing JIT compiler written in
+rust.
 
 ## Usage
 
@@ -20,7 +21,7 @@ Options:
 
 [BrainFuck](https://en.wikipedia.org/wiki/Brainfuck) is an esoteric programming
 language designed as a joke. The environment provides the programmer with an
-"infinite" array of unsigned bytes and a data pointer. There are only 8 single 
+"infinite" array of unsigned bytes and a data pointer. There are only 8 single
 character commands:
 
 * `+` : Increment the current memory cell by 1 (with wrapping overflow)
@@ -94,7 +95,7 @@ Where:
 
 `Print` and `Read` are slightly more complex but don't require us to do any
 control flow ourselves.
- 
+
 ---
 
 Where we start to get into trouble is with `[` and `]`. To avoid the difficulty
