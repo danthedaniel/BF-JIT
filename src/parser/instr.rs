@@ -1,9 +1,23 @@
-use std::char;
 use std::fmt;
-use std::io::Write;
 use std::mem;
 
-use libc::getchar;
+/// Functions called by JIT-compiled code.
+mod jit_functions {
+    use libc::getchar;
+    use std::char;
+    use std::io::Write;
+
+    /// Print a single byte to stdout.
+    pub fn print(byte: u8) {
+        print!("{}", char::from_u32(byte as u32).unwrap_or('?'));
+        std::io::stdout().flush().unwrap();
+    }
+
+    /// Read a single byte from stdin.
+    pub fn read() -> u8 {
+        unsafe { getchar() as u8 }
+    }
+}
 
 /// Convert an expression to a native-endian order byte array after a type cast.
 macro_rules! to_ne_bytes {
@@ -11,17 +25,6 @@ macro_rules! to_ne_bytes {
         let bytes: [u8; mem::size_of::<$ptr_type>()] = unsafe { mem::transmute($ptr as $ptr_type) };
         bytes
     }};
-}
-
-/// Print a single byte to stdout.
-fn print(byte: u8) {
-    print!("{}", char::from_u32(byte as u32).unwrap_or('?'));
-    std::io::stdout().flush().unwrap();
-}
-
-/// Read a single byte from stdin.
-fn read() -> u8 {
-    unsafe { getchar() as u8 }
 }
 
 /// BrainFuck instructions must all have the same size to simplify jumping.
@@ -107,7 +110,7 @@ impl Instr {
                 bytes.push(n_bytes[3]);
             }
             Instr::Print => {
-                let print_ptr_bytes = to_ne_bytes!(print, fn(u8) -> ());
+                let print_ptr_bytes = to_ne_bytes!(jit_functions::print, fn(u8) -> ());
 
                 // Move the current memory cell into the first argument register
                 // movzx    rdi,BYTE PTR [r10]
@@ -153,7 +156,7 @@ impl Instr {
                 bytes.push(0x5a);
             }
             Instr::Read => {
-                let read_ptr_bytes = to_ne_bytes!(read, fn() -> u8);
+                let read_ptr_bytes = to_ne_bytes!(jit_functions::read, fn() -> u8);
 
                 // Push data pointer onto stack
                 // push    r10
