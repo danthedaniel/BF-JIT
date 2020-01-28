@@ -38,7 +38,7 @@ impl Program {
         bytes.push(0xfa);
 
         for instr in self.data.iter() {
-            bytes.extend(instr.jit()?);
+            bytes.extend(instr.jit());
         }
 
         // mov    rsp,rbp

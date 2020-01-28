@@ -64,7 +64,7 @@ impl Instr {
     ///
     /// r10 is used to hold the data pointer.
     #[cfg(target_arch = "x86_64")]
-    pub fn jit(&self) -> Result<Vec<u8>, String> {
+    pub fn jit(&self) -> Vec<u8> {
         let mut bytes: Vec<u8> = Vec::new();
 
         match self {
@@ -250,7 +250,7 @@ impl Instr {
             bytes.push(0x90);
         }
 
-        Ok(bytes)
+        bytes
     }
 }
 
