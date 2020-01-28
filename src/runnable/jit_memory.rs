@@ -2,7 +2,7 @@ use std::fmt;
 use std::mem;
 use std::ops::{Index, IndexMut};
 
-use libc::{_SC_PAGESIZE, sysconf};
+use libc::{sysconf, _SC_PAGESIZE};
 
 use runnable::Runnable;
 
@@ -15,14 +15,12 @@ extern "C" {
 /// `numerator` - The upper component of a division
 /// `denominator` - The lower component of a division
 fn int_ceil(numerator: usize, denominator: usize) -> usize {
-    return (numerator / denominator + 1) * denominator;
+    (numerator / denominator + 1) * denominator
 }
 
 // Dynamically read the page size. Unix only.
 fn get_page_size() -> usize {
-    unsafe {
-        sysconf(_SC_PAGESIZE) as usize
-    }
+    unsafe { sysconf(_SC_PAGESIZE) as usize }
 }
 
 /// Container for executable bytes.
@@ -48,12 +46,12 @@ impl JITMemory {
 
             memset(_ptr, 0xc3, size); // for now, prepopulate with 'RET'
 
-            data_ptr = mem::transmute(_ptr);
+            data_ptr = _ptr as *mut u8;
         }
 
         let contents = unsafe { Vec::from_raw_parts(data_ptr, source.len(), size) };
 
-        let mut jit = JITMemory { contents: contents };
+        let mut jit = JITMemory { contents };
 
         // Copy source into JIT memory.
         for (index, &byte) in source.iter().enumerate() {
@@ -65,7 +63,7 @@ impl JITMemory {
 }
 
 impl Runnable for JITMemory {
-    fn run(&mut self) -> () {
+    fn run(&mut self) {
         let mut bf_mem = vec![0u8; 30_000]; // Memory space used by BrainFuck
         let mem_ptr = bf_mem.as_mut_ptr();
         let func: fn(*mut u8) -> () = unsafe { mem::transmute(self.contents.as_mut_ptr()) };
@@ -95,6 +93,6 @@ impl fmt::Debug for JITMemory {
             write!(f, "{:02X}", byte)?;
         }
 
-        write!(f, "\n")
+        writeln!(f)
     }
 }

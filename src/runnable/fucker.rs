@@ -19,7 +19,7 @@ pub struct Fucker {
 impl Fucker {
     pub fn new(program: Program) -> Self {
         Fucker {
-            program: program,
+            program,
             memory: vec![0u8; 0x4000],
             pc: 0,
             dp: 0,
@@ -90,7 +90,7 @@ impl Fucker {
 
         self.pc += 1;
 
-        return true;
+        true
     }
 }
 

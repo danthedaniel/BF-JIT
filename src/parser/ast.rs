@@ -29,11 +29,11 @@ pub struct AST {
 
 impl AST {
     pub fn to_program(&self) -> Program {
-        let instrs = Self::to_instrs(self.data.clone(), 0);
+        let instrs = Self::nodes_to_instrs(self.data.clone(), 0);
         Program::new(instrs)
     }
 
-    fn to_instrs(nodes: Vec<ASTNode>, start: usize) -> Vec<Instr> {
+    fn nodes_to_instrs(nodes: Vec<ASTNode>, start: usize) -> Vec<Instr> {
         let mut instrs = Vec::new();
 
         for node in nodes {
@@ -48,7 +48,7 @@ impl AST {
                 ASTNode::Read => instrs.push(Instr::Read),
                 ASTNode::Loop(vec) => {
                     // Add 1 to the index to start counting after the BeginLoop
-                    let inner_loop = Self::to_instrs(vec.clone(), program_index + 1);
+                    let inner_loop = Self::nodes_to_instrs(vec.clone(), program_index + 1);
 
                     let offset = inner_loop.len() + 1;
                     instrs.push(Instr::BeginLoop(offset));
@@ -62,7 +62,7 @@ impl AST {
     }
 
     pub fn from_char_vec(input: Vec<char>) -> Result<Self, String> {
-        if input.len() == 0 {
+        if input.is_empty() {
             // Return an empty program
             return Ok(Self { data: Vec::new() });
         }
@@ -100,7 +100,7 @@ impl AST {
                 ',' => push_node!(ASTNode::Read),
                 '[' => loops.push(Vec::new()),
                 ']' => {
-                    let current_loop = loops.pop().ok_or(format!("More ] than ["))?;
+                    let current_loop = loops.pop().ok_or("More ] than [")?;
 
                     // Do not add loop if it will be the first element in the
                     // ASTNode vector. This is because:
@@ -110,7 +110,7 @@ impl AST {
                     //
                     // So if no non-loops have executed there is no use in
                     // emitting a Loop ASTNode.
-                    if output.len() > 0 {
+                    if !output.is_empty() {
                         let optimized_loop = Self::shallow_run_length_optimize(current_loop);
                         push_node!(ASTNode::Loop(optimized_loop));
                     }
@@ -120,15 +120,14 @@ impl AST {
             }
         }
 
-        if loops.len() > 0 {
+        if !loops.is_empty() {
             // Anywhere deeper than the top level should always return from the '['
             // match branch above.
             //
             // Example program that will cause this error:
             //
             // [[]
-            println!("");
-            return Err(format!("More [ than ]"));
+            return Err("More [ than ]".to_string());
         }
 
         Ok(Self::shallow_run_length_optimize(output))
@@ -140,7 +139,7 @@ impl AST {
 
         for node in input {
             let len = output.len();
-            let last = output.get(len.checked_sub(1).unwrap_or(0));
+            let last = output.get(len.saturating_sub(1));
 
             // For each operator +, -, < and >, if the last instruction in the
             // output Vec is the same, then increment that instruction instead

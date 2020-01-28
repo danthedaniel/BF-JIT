@@ -15,7 +15,7 @@ use docopt::Docopt;
 
 use parser::AST;
 
-const USAGE: &'static str = "
+const USAGE: &str = "
 Fucker
 
 Usage:
@@ -42,7 +42,7 @@ fn main() {
         .unwrap_or_else(|e| e.exit());
 
     let program = read_file(&args.arg_program)
-        .and_then(|chars| AST::from_char_vec(chars))
+        .and_then(AST::from_char_vec)
         .map(|ast| ast.to_program())
         .unwrap_or_else(|e| {
             eprintln!("Error occurred while loading program: {}", e);

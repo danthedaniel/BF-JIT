@@ -11,7 +11,7 @@ pub struct Program {
 
 impl Program {
     pub fn new(data: Vec<Instr>) -> Self {
-        Program { data: data }
+        Program { data }
     }
 
     pub fn len(&self) -> usize {
@@ -77,12 +77,12 @@ impl Index<usize> for Program {
 
 impl fmt::Debug for Program {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Addr\tInstr\tOperands\n")?;
+        writeln!(f, "Addr\tInstr\tOperands")?;
 
         for (pos, instr) in self.data.iter().enumerate() {
-            write!(f, "0x{:04X}\t{:?}\n", pos, instr)?;
+            writeln!(f, "0x{:04X}\t{:?}", pos, instr)?;
         }
 
-        write!(f, "\n")
+        writeln!(f)
     }
 }
