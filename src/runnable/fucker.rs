@@ -76,14 +76,14 @@ impl Fucker {
             Instr::Read => {
                 self.memory[self.dp] = unsafe { getchar() as u8 };
             }
-            Instr::BeginLoop(end_pos) => {
+            Instr::BeginLoop(offset) => {
                 if current == 0 {
-                    self.pc = end_pos;
+                    self.pc += offset;
                 }
             }
-            Instr::EndLoop(ret_pos) => {
+            Instr::EndLoop(offset) => {
                 if current != 0 {
-                    self.pc = ret_pos;
+                    self.pc -= offset;
                 }
             }
         }

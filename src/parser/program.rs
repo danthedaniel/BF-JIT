@@ -37,8 +37,8 @@ impl Program {
         bytes.push(0x89);
         bytes.push(0xfa);
 
-        for (index, instr) in self.data.iter().enumerate() {
-            bytes.extend(instr.jit(index)?);
+        for instr in self.data.iter() {
+            bytes.extend(instr.jit()?);
         }
 
         // mov    rsp,rbp

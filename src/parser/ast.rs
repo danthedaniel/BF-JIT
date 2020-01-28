@@ -47,11 +47,13 @@ impl AST {
                 ASTNode::Print => instrs.push(Instr::Print),
                 ASTNode::Read => instrs.push(Instr::Read),
                 ASTNode::Loop(vec) => {
+                    // Add 1 to the index to start counting after the BeginLoop
                     let inner_loop = Self::to_instrs(vec.clone(), program_index + 1);
 
-                    instrs.push(Instr::BeginLoop(program_index + inner_loop.len() + 1));
+                    let offset = inner_loop.len() + 1;
+                    instrs.push(Instr::BeginLoop(offset));
                     instrs.extend(inner_loop);
-                    instrs.push(Instr::EndLoop(program_index));
+                    instrs.push(Instr::EndLoop(offset));
                 }
             }
         }

@@ -53,10 +53,9 @@ pub enum Instr {
     Print,
     /// Read one character from stdin.
     Read,
-    /// If the current memory cell is 0, jump to the matching EndLoop (whos
-    /// index is held inside).
+    /// If the current memory cell is 0, jump forward by the contained offset.
     BeginLoop(usize),
-    /// If the current memory cell is not 0, jump to the matching BeginLoop.
+    /// If the current memory cell is not 0, jump backward by the contained offset.
     EndLoop(usize),
 }
 
@@ -65,7 +64,7 @@ impl Instr {
     ///
     /// r10 is used to hold the data pointer.
     #[cfg(target_arch = "x86_64")]
-    pub fn jit(&self, this_pos: usize) -> Result<Vec<u8>, String> {
+    pub fn jit(&self) -> Result<Vec<u8>, String> {
         let mut bytes: Vec<u8> = Vec::new();
 
         match self {
@@ -200,11 +199,11 @@ impl Instr {
                 bytes.push(0x41);
                 bytes.push(0x5a);
             }
-            Instr::BeginLoop(pos) => {
+            Instr::BeginLoop(offset) => {
                 let begin_loop_size: i32 = 10; // Bytes
 
-                let offset = (*pos as i32 - this_pos as i32) * BF_INSTR_SIZE - begin_loop_size;
-                let offset_bytes = offset.to_ne_bytes();
+                let byte_offset = (*offset as i32) * BF_INSTR_SIZE - begin_loop_size;
+                let offset_bytes = byte_offset.to_ne_bytes();
 
                 // Check if the current memory cell equals zero.
                 // cmp    BYTE PTR [r10],0x0
@@ -222,11 +221,11 @@ impl Instr {
                 bytes.push(offset_bytes[2]);
                 bytes.push(offset_bytes[3]);
             }
-            Instr::EndLoop(pos) => {
+            Instr::EndLoop(offset) => {
                 let end_loop_size: i32 = 10; // Bytes
 
-                let offset = (*pos as i32 - this_pos as i32) * BF_INSTR_SIZE - end_loop_size;
-                let offset_bytes = offset.to_ne_bytes();
+                let byte_offset = -(*offset as i32) * BF_INSTR_SIZE - end_loop_size;
+                let offset_bytes = byte_offset.to_ne_bytes();
 
                 // Check if the current memory cell equals zero.
                 // cmp    BYTE PTR [r10],0x0
