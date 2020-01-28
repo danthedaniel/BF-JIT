@@ -54,8 +54,8 @@ pub enum Instr {
     Prev(usize),
     Print,
     Read,
-    BeginLoop(Option<usize>),
-    EndLoop(Option<usize>),
+    BeginLoop(usize),
+    EndLoop(usize),
 }
 ```
 
@@ -116,8 +116,8 @@ size of the current instruction:
 ```rust
 let begin_loop_size: i32 = 10; // Bytes
 
-let offset = (*pos as i32 - this_pos as i32) * BF_INSTR_SIZE - begin_loop_size;
-let offset_bytes: [u8; mem::size_of::<i32>()] = unsafe { mem::transmute(offset) };
+let byte_offset = (*offset as i32) * BF_INSTR_SIZE - begin_loop_size;
+let offset_bytes = byte_offset.to_ne_bytes();
 
 // Check if the current memory cell equals zero.
 // cmp    BYTE PTR [r10],0x0
