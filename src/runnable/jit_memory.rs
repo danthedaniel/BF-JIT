@@ -31,8 +31,10 @@ pub struct JITMemory {
 impl JITMemory {
     /// Clone a vector of bytes into new executable memory pages.
     pub fn new(source: Vec<u8>) -> JITMemory {
-        let data_ptr: *mut u8;
         let size = int_ceil(source.len(), get_page_size());
+
+        let data_ptr: *mut u8;
+        let contents: Vec<u8>;
 
         unsafe {
             let mut _ptr: *mut libc::c_void = mem::MaybeUninit::uninit().assume_init();
@@ -47,9 +49,8 @@ impl JITMemory {
             memset(_ptr, 0xc3, size); // for now, prepopulate with 'RET'
 
             data_ptr = _ptr as *mut u8;
+            contents = Vec::from_raw_parts(data_ptr, source.len(), size);
         }
-
-        let contents = unsafe { Vec::from_raw_parts(data_ptr, source.len(), size) };
 
         let mut jit = JITMemory { contents };
 
