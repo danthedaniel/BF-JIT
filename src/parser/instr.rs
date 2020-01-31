@@ -8,13 +8,13 @@ mod jit_functions {
     use std::io::Write;
 
     /// Print a single byte to stdout.
-    pub fn print(byte: u8) {
+    pub extern "C" fn print(byte: u8) {
         print!("{}", char::from_u32(byte as u32).unwrap_or('?'));
         std::io::stdout().flush().unwrap();
     }
 
     /// Read a single byte from stdin.
-    pub fn read() -> u8 {
+    pub extern "C" fn read() -> u8 {
         unsafe { getchar() as u8 }
     }
 }
@@ -109,7 +109,7 @@ impl Instr {
                 bytes.push(n_bytes[3]);
             }
             Instr::Print => {
-                let print_ptr_bytes = to_ne_bytes!(jit_functions::print, fn(u8) -> ());
+                let print_ptr_bytes = to_ne_bytes!(jit_functions::print, extern "C" fn(u8) -> ());
 
                 // Move the current memory cell into the first argument register
                 // movzx    rdi,BYTE PTR [r10]
@@ -155,7 +155,7 @@ impl Instr {
                 bytes.push(0x5a);
             }
             Instr::Read => {
-                let read_ptr_bytes = to_ne_bytes!(jit_functions::read, fn() -> u8);
+                let read_ptr_bytes = to_ne_bytes!(jit_functions::read, extern "C" fn() -> u8);
 
                 // Push data pointer onto stack
                 // push    r10
