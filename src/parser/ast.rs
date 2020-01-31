@@ -63,21 +63,8 @@ impl AST {
         instrs
     }
 
-    pub fn from_char_vec(input: Vec<char>) -> Result<Self, String> {
-        if input.is_empty() {
-            // Return an empty program
-            return Ok(Self {
-                data: VecDeque::new(),
-            });
-        }
-
-        Ok(AST {
-            data: Self::parse(&input[..])?,
-        })
-    }
-
-    /// Convert raw input into a vector of ASTNodes.
-    fn parse(input: &[char]) -> Result<VecDeque<ASTNode>, String> {
+    /// Convert raw input into an AST.
+    pub fn parse(input: Vec<char>) -> Result<Self, String> {
         let mut output = VecDeque::new();
         let mut loops: VecDeque<VecDeque<ASTNode>> = VecDeque::new();
 
@@ -127,7 +114,9 @@ impl AST {
             return Err("More [ than ]".to_string());
         }
 
-        Ok(Self::shallow_run_length_optimize(&mut output))
+        Ok(AST {
+            data: Self::shallow_run_length_optimize(&mut output),
+        })
     }
 
     /// Convert runs of +, -, < and > into bulk operations.

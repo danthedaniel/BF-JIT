@@ -42,7 +42,7 @@ fn main() {
         .unwrap_or_else(|e| e.exit());
 
     let program = read_program(&args.arg_program)
-        .and_then(AST::from_char_vec)
+        .and_then(AST::parse)
         .map(|ast| ast.to_program())
         .unwrap_or_else(|e| {
             eprintln!("Error occurred while loading program: {}", e);
