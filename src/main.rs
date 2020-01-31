@@ -8,7 +8,7 @@ mod parser;
 mod runnable;
 
 use std::fs::File;
-use std::io::Read;
+use std::io::{stdin, Read};
 use std::process::exit;
 
 use docopt::Docopt;
@@ -41,7 +41,7 @@ fn main() {
         .and_then(|d| d.deserialize())
         .unwrap_or_else(|e| e.exit());
 
-    let program = read_file(&args.arg_program)
+    let program = read_program(&args.arg_program)
         .and_then(AST::from_char_vec)
         .map(|ast| ast.to_program())
         .unwrap_or_else(|e| {
@@ -67,11 +67,21 @@ fn main() {
     runnable.run();
 }
 
-fn read_file(path: &str) -> Result<Vec<char>, String> {
-    let mut file = File::open(path).map_err(|e| format!("Could not open file {:?}", e))?;
+/// Read a BrainFuck program's source code.
+///
+/// When path is "-" this will read from stdin.
+fn read_program(path: &str) -> Result<Vec<char>, String> {
     let mut buffer: String = String::new();
+    let mut source: Box<dyn Read> = match path {
+        "-" => Box::new(stdin()),
+        _ => {
+            let file = File::open(path).map_err(|e| format!("{:?}", e))?;
+            Box::new(file)
+        }
+    };
 
-    file.read_to_string(&mut buffer)
+    source
+        .read_to_string(&mut buffer)
         .map_err(|e| format!("Could not read file {:?}", e))?;
 
     Ok(buffer.chars().collect())
