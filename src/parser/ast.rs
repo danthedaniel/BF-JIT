@@ -100,6 +100,9 @@ impl AST {
                 ',' => push_node!(ASTNode::Read),
                 '[' => loops.push(Vec::new()),
                 ']' => {
+                    // Example program that will cause this error:
+                    //
+                    // []]
                     let current_loop = loops.pop().ok_or("More ] than [")?;
 
                     // Do not add loop if it will be the first element in the
@@ -121,9 +124,6 @@ impl AST {
         }
 
         if !loops.is_empty() {
-            // Anywhere deeper than the top level should always return from the '['
-            // match branch above.
-            //
             // Example program that will cause this error:
             //
             // [[]
