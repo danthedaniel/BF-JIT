@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 use super::Instr;
 use super::Program;
 
@@ -18,39 +20,39 @@ pub enum ASTNode {
     Read,
     /// Loop over the contained instructions while the current memory cell is
     /// not zero.
-    Loop(Vec<ASTNode>),
+    Loop(VecDeque<ASTNode>),
 }
 
 /// Container for a vector of ASTNodes.
 #[derive(Debug, Clone)]
 pub struct AST {
-    data: Vec<ASTNode>,
+    data: VecDeque<ASTNode>,
 }
 
 impl AST {
     pub fn to_program(&self) -> Program {
-        let instrs = Self::nodes_to_instrs(self.data.clone(), 0);
+        let instrs = Self::nodes_to_instrs(&mut self.data.clone());
         Program::new(instrs)
     }
 
-    fn nodes_to_instrs(nodes: Vec<ASTNode>, start: usize) -> Vec<Instr> {
+    fn nodes_to_instrs(nodes: &mut VecDeque<ASTNode>) -> Vec<Instr> {
         let mut instrs = Vec::new();
 
-        for node in nodes {
-            let program_index = start + instrs.len();
+        while !nodes.is_empty() {
+            let mut node = nodes.pop_front().unwrap();
 
-            match node {
-                ASTNode::Incr(n) => instrs.push(Instr::Incr(n)),
-                ASTNode::Decr(n) => instrs.push(Instr::Decr(n)),
-                ASTNode::Next(n) => instrs.push(Instr::Next(n)),
-                ASTNode::Prev(n) => instrs.push(Instr::Prev(n)),
+            match &mut node {
+                ASTNode::Incr(n) => instrs.push(Instr::Incr(*n)),
+                ASTNode::Decr(n) => instrs.push(Instr::Decr(*n)),
+                ASTNode::Next(n) => instrs.push(Instr::Next(*n)),
+                ASTNode::Prev(n) => instrs.push(Instr::Prev(*n)),
                 ASTNode::Print => instrs.push(Instr::Print),
                 ASTNode::Read => instrs.push(Instr::Read),
                 ASTNode::Loop(vec) => {
-                    // Add 1 to the index to start counting after the BeginLoop
-                    let inner_loop = Self::nodes_to_instrs(vec.clone(), program_index + 1);
-
+                    let inner_loop = Self::nodes_to_instrs(vec);
+                    // Add 1 to the offset to account for the BeginLoop/EndLoop instr
                     let offset = inner_loop.len() + 1;
+
                     instrs.push(Instr::BeginLoop(offset));
                     instrs.extend(inner_loop);
                     instrs.push(Instr::EndLoop(offset));
@@ -64,7 +66,9 @@ impl AST {
     pub fn from_char_vec(input: Vec<char>) -> Result<Self, String> {
         if input.is_empty() {
             // Return an empty program
-            return Ok(Self { data: Vec::new() });
+            return Ok(Self {
+                data: VecDeque::new(),
+            });
         }
 
         Ok(AST {
@@ -73,54 +77,47 @@ impl AST {
     }
 
     /// Convert raw input into a vector of ASTNodes.
-    fn parse(input: &[char]) -> Result<Vec<ASTNode>, String> {
-        let mut output = Vec::new();
-        let mut loops: Vec<Vec<ASTNode>> = Vec::new();
+    fn parse(input: &[char]) -> Result<VecDeque<ASTNode>, String> {
+        let mut output = VecDeque::new();
+        let mut loops: VecDeque<VecDeque<ASTNode>> = VecDeque::new();
 
         for character in input {
-            /// Add a node to either the current loop or the top-level output.
-            macro_rules! push_node {
-                ($node:expr) => {{
-                    let depth = loops.len();
-
-                    if depth == 0 {
-                        output.push($node);
-                    } else {
-                        loops[depth - 1].push($node);
-                    }
-                }};
-            }
-
-            match character {
-                '+' => push_node!(ASTNode::Incr(1)),
-                '-' => push_node!(ASTNode::Decr(1)),
-                '>' => push_node!(ASTNode::Next(1)),
-                '<' => push_node!(ASTNode::Prev(1)),
-                '.' => push_node!(ASTNode::Print),
-                ',' => push_node!(ASTNode::Read),
-                '[' => loops.push(Vec::new()),
+            let next_node = match character {
+                '+' => ASTNode::Incr(1),
+                '-' => ASTNode::Decr(1),
+                '>' => ASTNode::Next(1),
+                '<' => ASTNode::Prev(1),
+                '.' => ASTNode::Print,
+                ',' => ASTNode::Read,
+                '[' => {
+                    loops.push_back(VecDeque::new());
+                    continue;
+                }
                 ']' => {
                     // Example program that will cause this error:
                     //
                     // []]
-                    let current_loop = loops.pop().ok_or("More ] than [")?;
+                    let mut current_loop = loops.pop_back().ok_or("More ] than [")?;
 
                     // Do not add loop if it will be the first element in the
-                    // ASTNode vector. This is because:
+                    // output vector. This is because:
                     //
                     // 1. The BrainFuck machine starts all cells at 0
                     // 2. Loops are skipped when the current cell is 0
                     //
                     // So if no non-loops have executed there is no use in
                     // emitting a Loop ASTNode.
-                    if !output.is_empty() {
-                        let optimized_loop = Self::shallow_run_length_optimize(current_loop);
-                        push_node!(ASTNode::Loop(optimized_loop));
+                    if output.is_empty() {
+                        continue;
                     }
+
+                    ASTNode::Loop(Self::shallow_run_length_optimize(&mut current_loop))
                 }
                 // All other characters are comments and will be ignored
-                _ => {}
-            }
+                _ => continue,
+            };
+
+            loops.back_mut().unwrap_or(&mut output).push_back(next_node);
         }
 
         if !loops.is_empty() {
@@ -130,53 +127,35 @@ impl AST {
             return Err("More [ than ]".to_string());
         }
 
-        Ok(Self::shallow_run_length_optimize(output))
+        Ok(Self::shallow_run_length_optimize(&mut output))
     }
 
     /// Convert runs of +, -, < and > into bulk operations.
-    fn shallow_run_length_optimize(input: Vec<ASTNode>) -> Vec<ASTNode> {
-        let mut output: Vec<ASTNode> = Vec::new();
+    fn shallow_run_length_optimize(input: &mut VecDeque<ASTNode>) -> VecDeque<ASTNode> {
+        let mut output = VecDeque::new();
 
-        for node in input {
-            let len = output.len();
-            let last = output.get(len.saturating_sub(1));
+        while !input.is_empty() {
+            let prev_node = output.back();
+            let next_node = input.pop_front().unwrap();
 
             // For each operator +, -, < and >, if the last instruction in the
             // output Vec is the same, then increment that instruction instead
             // of adding another identical instruction.
-            //
-            // All other operators are just appended to the Vec.
-            //
-            // Loop jump positions are left un-calculated, to be determined
-            // later.
-            match (node, last) {
-                // Incr
-                (ASTNode::Incr(a), Some(ASTNode::Incr(b))) => {
-                    output[len - 1] = ASTNode::Incr(a.wrapping_add(*b));
+            let combined = match (prev_node, &next_node) {
+                (Some(ASTNode::Incr(b)), ASTNode::Incr(a)) => ASTNode::Incr(a.wrapping_add(*b)),
+                (Some(ASTNode::Decr(b)), ASTNode::Decr(a)) => ASTNode::Decr(a.wrapping_add(*b)),
+                (Some(ASTNode::Next(b)), ASTNode::Next(a)) => ASTNode::Next(a.wrapping_add(*b)),
+                (Some(ASTNode::Prev(b)), ASTNode::Prev(a)) => ASTNode::Prev(a.wrapping_add(*b)),
+                _ => {
+                    // Node is not combineable, just move into the ouput vector
+                    output.push_back(next_node);
+                    continue;
                 }
-                (ASTNode::Incr(a), _) => output.push(ASTNode::Incr(a)),
-                // Decr
-                (ASTNode::Decr(a), Some(ASTNode::Decr(b))) => {
-                    output[len - 1] = ASTNode::Decr(a.wrapping_add(*b));
-                }
-                (ASTNode::Decr(a), _) => output.push(ASTNode::Decr(a)),
-                // Next
-                (ASTNode::Next(a), Some(ASTNode::Next(b))) => {
-                    output[len - 1] = ASTNode::Next(a.wrapping_add(*b));
-                }
-                (ASTNode::Next(a), _) => output.push(ASTNode::Next(a)),
-                // Prev
-                (ASTNode::Prev(a), Some(ASTNode::Prev(b))) => {
-                    output[len - 1] = ASTNode::Prev(a.wrapping_add(*b));
-                }
-                (ASTNode::Prev(a), _) => output.push(ASTNode::Prev(a)),
-                // Print
-                (ASTNode::Print, _) => output.push(ASTNode::Print),
-                // Read
-                (ASTNode::Read, _) => output.push(ASTNode::Read),
-                // Loop
-                (ASTNode::Loop(vec), _) => output.push(ASTNode::Loop(vec.clone())),
-            }
+            };
+
+            // Replace last node with the combined one
+            output.pop_back();
+            output.push_back(combined);
         }
 
         output
