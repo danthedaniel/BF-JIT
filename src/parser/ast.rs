@@ -38,9 +38,7 @@ impl AST {
     fn nodes_to_instrs(nodes: &mut VecDeque<ASTNode>) -> Vec<Instr> {
         let mut instrs = Vec::new();
 
-        while !nodes.is_empty() {
-            let mut node = nodes.pop_front().unwrap();
-
+        while let Some(mut node) = nodes.pop_front() {
             match &mut node {
                 ASTNode::Incr(n) => instrs.push(Instr::Incr(*n)),
                 ASTNode::Decr(n) => instrs.push(Instr::Decr(*n)),
@@ -123,9 +121,8 @@ impl AST {
     fn shallow_run_length_optimize(input: &mut VecDeque<ASTNode>) -> VecDeque<ASTNode> {
         let mut output = VecDeque::new();
 
-        while !input.is_empty() {
+        while let Some(next_node) = input.pop_front() {
             let prev_node = output.back();
-            let next_node = input.pop_front().unwrap();
 
             // For each operator +, -, < and >, if the last instruction in the
             // output Vec is the same, then increment that instruction instead
