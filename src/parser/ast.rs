@@ -147,3 +147,15 @@ impl AST {
         output
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse() {
+        let ast = AST::parse("[[]".to_string());
+
+        assert!(ast.is_err());
+    }
+}
