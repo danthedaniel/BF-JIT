@@ -70,7 +70,7 @@ fn main() {
 /// Read a BrainFuck program's source code.
 ///
 /// When path is "-" this will read from stdin.
-fn read_program(path: &str) -> Result<Vec<char>, String> {
+fn read_program(path: &str) -> Result<String, String> {
     let mut buffer: String = String::new();
     let mut source: Box<dyn Read> = match path {
         "-" => Box::new(stdin()),
@@ -84,5 +84,5 @@ fn read_program(path: &str) -> Result<Vec<char>, String> {
         .read_to_string(&mut buffer)
         .map_err(|e| format!("Could not read file {:?}", e))?;
 
-    Ok(buffer.chars().collect())
+    Ok(buffer)
 }

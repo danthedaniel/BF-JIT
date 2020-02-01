@@ -62,11 +62,11 @@ impl AST {
     }
 
     /// Convert raw input into an AST.
-    pub fn parse(input: Vec<char>) -> Result<Self, String> {
+    pub fn parse(input: String) -> Result<Self, String> {
         let mut output = VecDeque::new();
         let mut loops: VecDeque<VecDeque<ASTNode>> = VecDeque::new();
 
-        for character in input {
+        for character in input.chars() {
             let next_node = match character {
                 '+' => ASTNode::Incr(1),
                 '-' => ASTNode::Decr(1),
