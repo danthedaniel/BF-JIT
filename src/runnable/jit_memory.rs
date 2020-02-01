@@ -6,14 +6,10 @@ use libc::{sysconf, _SC_PAGESIZE};
 
 use runnable::Runnable;
 
-extern "C" {
-    fn memset(s: *mut libc::c_void, c: libc::uint32_t, n: libc::size_t) -> *mut libc::c_void;
-}
-
 /// Round up an integer division.
 ///
-/// `numerator` - The upper component of a division
-/// `denominator` - The lower component of a division
+/// * `numerator` - The upper component of a division
+/// * `denominator` - The lower component of a division
 fn int_ceil(numerator: usize, denominator: usize) -> usize {
     (numerator / denominator + 1) * denominator
 }
@@ -32,24 +28,20 @@ impl JITMemory {
     /// Clone a vector of bytes into new executable memory pages.
     pub fn new(source: Vec<u8>) -> JITMemory {
         let size = int_ceil(source.len(), get_page_size());
-
-        let data_ptr: *mut u8;
         let contents: Vec<u8>;
 
         unsafe {
-            let mut _ptr: *mut libc::c_void = mem::MaybeUninit::uninit().assume_init();
+            let mut ptr: *mut libc::c_void = mem::MaybeUninit::uninit().assume_init();
 
-            libc::posix_memalign(&mut _ptr, get_page_size(), size);
+            libc::posix_memalign(&mut ptr, get_page_size(), size);
             libc::mprotect(
-                _ptr,
+                ptr,
                 size,
                 libc::PROT_EXEC | libc::PROT_READ | libc::PROT_WRITE,
             );
+            libc::memset(ptr, 0xc3, size); // for now, prepopulate with 'RET'
 
-            memset(_ptr, 0xc3, size); // for now, prepopulate with 'RET'
-
-            data_ptr = _ptr as *mut u8;
-            contents = Vec::from_raw_parts(data_ptr, source.len(), size);
+            contents = Vec::from_raw_parts(ptr as *mut u8, source.len(), size);
         }
 
         let mut jit = JITMemory { contents };
