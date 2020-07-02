@@ -6,17 +6,16 @@ use libc::{sysconf, _SC_PAGESIZE};
 
 use runnable::Runnable;
 
+lazy_static! {
+    static ref PAGE_SIZE: usize = unsafe { sysconf(_SC_PAGESIZE) as usize };
+}
+
 /// Round up an integer division.
 ///
 /// * `numerator` - The upper component of a division
 /// * `denominator` - The lower component of a division
 fn int_ceil(numerator: usize, denominator: usize) -> usize {
     (numerator / denominator + 1) * denominator
-}
-
-// Dynamically read the page size. Unix only.
-fn get_page_size() -> usize {
-    unsafe { sysconf(_SC_PAGESIZE) as usize }
 }
 
 /// Container for executable bytes.
@@ -27,13 +26,13 @@ pub struct JITMemory {
 impl JITMemory {
     /// Clone a vector of bytes into new executable memory pages.
     pub fn new(source: Vec<u8>) -> JITMemory {
-        let size = int_ceil(source.len(), get_page_size());
+        let size = int_ceil(source.len(), *PAGE_SIZE);
         let contents: Vec<u8>;
 
         unsafe {
             let mut ptr: *mut libc::c_void = mem::MaybeUninit::uninit().assume_init();
 
-            libc::posix_memalign(&mut ptr, get_page_size(), size);
+            libc::posix_memalign(&mut ptr, *PAGE_SIZE, size);
             libc::mprotect(
                 ptr,
                 size,
