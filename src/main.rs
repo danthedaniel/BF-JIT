@@ -75,17 +75,17 @@ fn main() {
 /// When path is "-" this will read from stdin.
 fn read_program(path: &str) -> Result<String, String> {
     let mut buffer: String = String::new();
-    let mut source: Box<dyn Read> = match path {
-        "-" => Box::new(stdin()),
-        _ => {
-            let file = File::open(path).map_err(|e| format!("{:?}", e))?;
-            Box::new(file)
+    let mut source: Box<dyn Read> = {
+        if path == "-" {
+            Box::new(stdin())
+        } else {
+            Box::new(File::open(path).map_err(|e| format!("Could not open file: {:?}", e))?)
         }
     };
 
     source
         .read_to_string(&mut buffer)
-        .map_err(|e| format!("Could not read file {:?}", e))?;
+        .map_err(|e| format!("Could not read file: {:?}", e))?;
 
     Ok(buffer)
 }

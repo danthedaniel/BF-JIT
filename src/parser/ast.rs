@@ -133,7 +133,7 @@ impl AST {
                 (Some(ASTNode::Next(b)), ASTNode::Next(a)) => ASTNode::Next(a.wrapping_add(*b)),
                 (Some(ASTNode::Prev(b)), ASTNode::Prev(a)) => ASTNode::Prev(a.wrapping_add(*b)),
                 _ => {
-                    // Node is not combineable, just move into the ouput vector
+                    // Node is not combineable, just move into the output vector
                     output.push_back(next_node);
                     continue;
                 }
