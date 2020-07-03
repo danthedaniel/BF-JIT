@@ -1,5 +1,7 @@
-BrainFuck
+Fucker
 ===
+
+[![Crate version](http://meritbadge.herokuapp.com/fucker)](https://crates.io/crates/fucker)
 
 A very over-engineered BrainFuck interpreter/optimizing JIT compiler written in
 rust.
