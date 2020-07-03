@@ -2,6 +2,11 @@
 name = "fucker"
 version = "0.4.0"
 authors = ["teaearlgraycold <teaearlgraycold@protonmail.com>"]
+homepage = "https://github.com/danthedaniel/BrainFuck"
+repository = "https://github.com/danthedaniel/BrainFuck"
+description = "BrainFuck interpreter and optimizing JIT compiler "
+readme = "README.md"
+license = "MIT"
 
 [dependencies]
 libc = "0.2"
