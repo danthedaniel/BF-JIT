@@ -3,12 +3,12 @@ use std::io::Write;
 
 use libc::getchar;
 
-use super::super::parser::{Instr, Program};
+use super::super::parser::Instr;
 use super::Runnable;
 
 /// BrainFuck virtual machine
 pub struct Fucker {
-    program: Program,
+    program: Vec<Instr>,
     memory: Vec<u8>,
     /// Program counter
     pub pc: usize,
@@ -17,7 +17,7 @@ pub struct Fucker {
 }
 
 impl Fucker {
-    pub fn new(program: Program) -> Self {
+    pub fn new(program: Vec<Instr>) -> Self {
         Fucker {
             program,
             memory: vec![0u8; 0x4000],

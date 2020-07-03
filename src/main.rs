@@ -46,7 +46,6 @@ fn main() {
 
     let program = read_program(&args.arg_program)
         .and_then(AST::parse)
-        .map(|ast| ast.to_program())
         .unwrap_or_else(|e| {
             eprintln!("Error occurred while loading program: {}", e);
             exit(1)

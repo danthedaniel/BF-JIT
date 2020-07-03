@@ -96,46 +96,6 @@ Where:
 `Print` and `Read` are slightly more complex but don't require us to do any
 control flow ourselves.
 
----
-
-Where we start to get into trouble is with `[` and `]`. To avoid the difficulty
-of tracking labels and linking them together before execution, all instructions'
-x86-64 machine code is padded with `nop`s.
-
-```rust
-while bytes.len() < BF_INSTR_SIZE as usize {
-    // nop
-    bytes.push(0x90);
-}
-```
-
-This means that the jump targets can be easily found as long as you know the
-target position (in the `Program` data vector), current position, and unpadded
-size of the current instruction:
-
-```rust
-let begin_loop_size: i32 = 10; // Bytes
-
-let byte_offset = (*offset as i32) * BF_INSTR_SIZE - begin_loop_size;
-let offset_bytes = byte_offset.to_ne_bytes();
-
-// Check if the current memory cell equals zero.
-// cmp    BYTE PTR [r10],0x0
-bytes.push(0x41);
-bytes.push(0x80);
-bytes.push(0x3a);
-bytes.push(0x00);
-
-// Jump to the end of the loop if equal.
-// je    offset
-bytes.push(0x0f);
-bytes.push(0x84);
-bytes.push(offset_bytes[0]);
-bytes.push(offset_bytes[1]);
-bytes.push(offset_bytes[2]);
-bytes.push(offset_bytes[3]);
-```
-
 ## Benchmarks
 
 Ran on [mandelbrot.bf](https://github.com/erikdubbelboer/brainfuck-jit/blob/919df502dc8a0441572180700de86be405387fcc/mandelbrot.bf)
@@ -144,4 +104,4 @@ Ran on [mandelbrot.bf](https://github.com/erikdubbelboer/brainfuck-jit/blob/919d
 |---|--:|
 | Naive Interpreter | 56.824s |
 | Optimized Interpreter | 19.055s |
-| Optimized JIT | 5.484s |
+| Optimized JIT | 1.557s |
