@@ -214,7 +214,7 @@ impl AST {
         Err(format!("Unsupported JIT architecture."))
     }
 
-    /// Convert an ASTNode into a sequence of executable bytes.
+    /// Convert a vector of ASTNodes into a sequence of executable bytes.
     ///
     /// r10 is used to hold the data pointer.
     #[cfg(target_arch = "x86_64")]
