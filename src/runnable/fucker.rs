@@ -92,10 +92,20 @@ impl Fucker {
 
         true
     }
+
+    pub fn reset(&mut self) {
+        for i in 0..(self.memory.len() - 1) {
+            self.memory[i] = 0;
+        }
+
+        self.pc = 0;
+        self.dp = 0;
+    }
 }
 
 impl Runnable for Fucker {
     fn run(&mut self) {
         while self.step() {}
+        self.reset();
     }
 }
