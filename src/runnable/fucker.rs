@@ -1,9 +1,10 @@
 use std::cmp;
+use std::collections::VecDeque;
 use std::io::Write;
 
 use libc::getchar;
 
-use super::super::parser::Instr;
+use super::super::parser::{ASTNode, Instr};
 use super::Runnable;
 
 /// BrainFuck virtual machine
@@ -17,13 +18,39 @@ pub struct Fucker {
 }
 
 impl Fucker {
-    pub fn new(program: Vec<Instr>) -> Self {
+    pub fn new(nodes: &VecDeque<ASTNode>) -> Self {
         Fucker {
-            program,
+            program: Self::compile(nodes),
             memory: vec![0u8; 0x4000],
             pc: 0,
             dp: 0,
         }
+    }
+
+    fn compile(nodes: &VecDeque<ASTNode>) -> Vec<Instr> {
+        let mut instrs = Vec::new();
+
+        for node in nodes {
+            match node {
+                ASTNode::Incr(n) => instrs.push(Instr::Incr(*n)),
+                ASTNode::Decr(n) => instrs.push(Instr::Decr(*n)),
+                ASTNode::Next(n) => instrs.push(Instr::Next(*n)),
+                ASTNode::Prev(n) => instrs.push(Instr::Prev(*n)),
+                ASTNode::Print => instrs.push(Instr::Print),
+                ASTNode::Read => instrs.push(Instr::Read),
+                ASTNode::Loop(vec) => {
+                    let inner_loop = Self::compile(vec);
+                    // Add 1 to the offset to account for the BeginLoop/EndLoop instr
+                    let offset = inner_loop.len() + 1;
+
+                    instrs.push(Instr::BeginLoop(offset));
+                    instrs.extend(inner_loop);
+                    instrs.push(Instr::EndLoop(offset));
+                }
+            }
+        }
+
+        instrs
     }
 
     /// Execute a single instruction on the VM.

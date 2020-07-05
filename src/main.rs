@@ -7,6 +7,7 @@ extern crate docopt;
 #[macro_use]
 extern crate lazy_static;
 
+mod code_gen;
 mod parser;
 mod runnable;
 
@@ -17,6 +18,7 @@ use std::process::exit;
 use docopt::Docopt;
 
 use parser::AST;
+use runnable::{Fucker, JITTarget, Runnable};
 
 const USAGE: &str = "
 Fucker
@@ -57,13 +59,14 @@ fn main() {
         return;
     }
 
-    let mut runnable = if args.flag_jit {
-        program.jit().unwrap_or_else(|msg| {
+    let mut runnable: Box<dyn Runnable> = if args.flag_jit {
+        let jit_target = JITTarget::new(&program.data).unwrap_or_else(|msg| {
             eprintln!("Error occurred while compiling program: {}", msg);
             exit(1)
-        })
+        });
+        Box::new(jit_target)
     } else {
-        program.int()
+        Box::new(Fucker::new(&program.data))
     };
 
     runnable.run();

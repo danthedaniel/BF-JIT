@@ -8,7 +8,7 @@ pub trait Runnable {
 }
 
 mod fucker;
-mod jit_memory;
+mod jit_target;
 
 pub use self::fucker::Fucker;
-pub use self::jit_memory::JITMemory;
+pub use self::jit_target::{JITPromiseID, JITTarget};
