@@ -19,3 +19,6 @@ lazy_static = "1.4.0"
 name = "fucker"
 doc = false
 test = false
+
+[profile.release]
+debug = true
