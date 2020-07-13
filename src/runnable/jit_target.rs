@@ -77,7 +77,7 @@ pub enum JITPromise {
 /// Container for executable bytes.
 pub struct JITTarget {
     bytes: Vec<u8>,
-    loops: Vec<JITPromise>,
+    promises: Vec<JITPromise>,
 }
 
 impl JITTarget {
@@ -85,13 +85,13 @@ impl JITTarget {
     #[cfg(target_arch = "x86_64")]
     pub fn new(nodes: &VecDeque<ASTNode>) -> Result<Self, String> {
         let mut bytes = Vec::new();
-        let mut loops = Vec::new();
+        let mut promises = Vec::new();
 
-        code_gen::wrapper(&mut bytes, Self::shallow_compile(nodes, &mut loops));
+        code_gen::wrapper(&mut bytes, Self::shallow_compile(nodes, &mut promises));
 
         Ok(Self {
             bytes: make_executable(&bytes),
-            loops: loops,
+            promises,
         })
     }
 
@@ -103,20 +103,20 @@ impl JITTarget {
 
     fn new_fragment(nodes: &VecDeque<ASTNode>) -> Self {
         let mut bytes = Vec::new();
-        let mut loops = Vec::new();
+        let mut promises = Vec::new();
 
-        code_gen::wrapper(&mut bytes, Self::compile_loop(nodes, &mut loops));
+        code_gen::wrapper(&mut bytes, Self::compile_loop(nodes, &mut promises));
 
         Self {
             bytes: make_executable(&bytes),
-            loops: loops,
+            promises,
         }
     }
 
     /// Convert a vector of ASTNodes into a sequence of executable bytes.
     ///
     /// r10 is used to hold the data pointer.
-    fn shallow_compile(nodes: &VecDeque<ASTNode>, loops: &mut Vec<JITPromise>) -> Vec<u8> {
+    fn shallow_compile(nodes: &VecDeque<ASTNode>, promises: &mut Vec<JITPromise>) -> Vec<u8> {
         let mut bytes = Vec::new();
 
         for node in nodes {
@@ -128,9 +128,9 @@ impl JITTarget {
                 ASTNode::Print => code_gen::print(&mut bytes, jit_functions::print),
                 ASTNode::Read => code_gen::read(&mut bytes, jit_functions::read),
                 ASTNode::Loop(nodes) if nodes.len() > 0x16 => {
-                    bytes.extend(Self::defer_loop(nodes, loops))
+                    bytes.extend(Self::defer_loop(nodes, promises))
                 }
-                ASTNode::Loop(nodes) => bytes.extend(Self::compile_loop(nodes, loops)),
+                ASTNode::Loop(nodes) => bytes.extend(Self::compile_loop(nodes, promises)),
             };
         }
 
@@ -138,21 +138,21 @@ impl JITTarget {
     }
 
     /// Perform AOT compilation on a loop.
-    fn compile_loop(nodes: &VecDeque<ASTNode>, loops: &mut Vec<JITPromise>) -> Vec<u8> {
+    fn compile_loop(nodes: &VecDeque<ASTNode>, promises: &mut Vec<JITPromise>) -> Vec<u8> {
         let mut bytes = Vec::new();
 
-        code_gen::aot_loop(&mut bytes, Self::shallow_compile(nodes, loops));
+        code_gen::aot_loop(&mut bytes, Self::shallow_compile(nodes, promises));
 
         bytes
     }
 
     /// Perform JIT compilation on a loop.
-    fn defer_loop(nodes: &VecDeque<ASTNode>, loops: &mut Vec<JITPromise>) -> Vec<u8> {
+    fn defer_loop(nodes: &VecDeque<ASTNode>, promises: &mut Vec<JITPromise>) -> Vec<u8> {
         let mut bytes = Vec::new();
 
-        loops.push(JITPromise::Deferred(nodes.clone()));
+        promises.push(JITPromise::Deferred(nodes.clone()));
 
-        code_gen::jit_loop(&mut bytes, loops.len() - 1);
+        code_gen::jit_loop(&mut bytes, promises.len() - 1);
 
         bytes
     }
@@ -171,14 +171,14 @@ impl JITTarget {
     /// Callback passed into compiled code. Allows for deferred compilation
     /// targets to be compiled, ran, and later re-ran.
     extern "C" fn jit_callback(&mut self, loop_index: JITPromiseID, mem_ptr: *mut u8) -> *mut u8 {
-        let jit_promise = &mut self.loops[loop_index];
+        let promise = &mut self.promises[loop_index];
         let return_ptr;
 
-        match jit_promise {
+        match promise {
             JITPromise::Deferred(nodes) => {
                 let mut new_target = Self::new_fragment(nodes);
                 return_ptr = new_target.exec(mem_ptr);
-                *jit_promise = JITPromise::Compiled(new_target);
+                *promise = JITPromise::Compiled(new_target);
             }
             JITPromise::Compiled(jit_target) => {
                 return_ptr = jit_target.exec(mem_ptr);
