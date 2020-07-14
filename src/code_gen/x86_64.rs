@@ -11,14 +11,42 @@ macro_rules! to_ne_bytes {
 }
 
 #[inline]
-pub fn wrapper(bytes: &mut Vec<u8>, content: Vec<u8>) {
+fn callee_save_to_stack(bytes: &mut Vec<u8>) {
+    // push   rbx
+    bytes.push(0x53);
+
     // push   rbp
     bytes.push(0x55);
 
-    // mov    rbp,rsp
-    bytes.push(0x48);
-    bytes.push(0x89);
-    bytes.push(0xe5);
+    // push   rdi
+    bytes.push(0x57);
+
+    // push   rsi
+    bytes.push(0x56);
+
+    // push   rsp
+    bytes.push(0x54);
+
+    // push   r12
+    bytes.push(0x41);
+    bytes.push(0x54);
+
+    // push   r13
+    bytes.push(0x41);
+    bytes.push(0x55);
+
+    // push   r14
+    bytes.push(0x41);
+    bytes.push(0x56);
+
+    // push   r15
+    bytes.push(0x41);
+    bytes.push(0x57);
+}
+
+#[inline]
+pub fn wrapper(bytes: &mut Vec<u8>, content: Vec<u8>) {
+    callee_save_to_stack(bytes);
 
     // Store pointer to brainfuck memory (first argument) in r10
     // mov    r10,rdi
@@ -32,7 +60,7 @@ pub fn wrapper(bytes: &mut Vec<u8>, content: Vec<u8>) {
     bytes.push(0x89);
     bytes.push(0xf3);
 
-    // Store pointer to JITTarget::jit (third argument) in r12
+    // Store pointer to JITTarget::jit_callback (third argument) in r12
     // mov    r12,rdx
     bytes.push(0x49);
     bytes.push(0x89);
@@ -40,22 +68,50 @@ pub fn wrapper(bytes: &mut Vec<u8>, content: Vec<u8>) {
 
     bytes.extend(content);
 
-    // mov    rsp,rbp
-    bytes.push(0x48);
-    bytes.push(0x89);
-    bytes.push(0xec);
-
-    // pop    rbp
-    bytes.push(0x5d);
-
     // Return the data pointer
     // mov    rax,r10
     bytes.push(0x4c);
     bytes.push(0x89);
     bytes.push(0xd0);
 
+    callee_restore_from_stack(bytes);
+
     // ret
     bytes.push(0xc3);
+}
+
+#[inline]
+fn callee_restore_from_stack(bytes: &mut Vec<u8>) {
+    // pop    r15
+    bytes.push(0x41);
+    bytes.push(0x5f);
+
+    // pop    r14
+    bytes.push(0x41);
+    bytes.push(0x5e);
+
+    // pop    r13
+    bytes.push(0x41);
+    bytes.push(0x5d);
+
+    // pop    r12
+    bytes.push(0x41);
+    bytes.push(0x5c);
+
+    // pop    rsp
+    bytes.push(0x5c);
+
+    // pop    rsi
+    bytes.push(0x5e);
+
+    // pop    rdi
+    bytes.push(0x5f);
+
+    // pop    rbp
+    bytes.push(0x5d);
+
+    // pop    rbx
+    bytes.push(0x5b);
 }
 
 #[inline]
@@ -262,7 +318,7 @@ pub fn jit_loop(bytes: &mut Vec<u8>, loop_index: JITPromiseID) {
     bytes.push(0x41);
     bytes.push(0x53);
 
-    // Push JIT function pointer onto stack
+    // Push JIT callback pointer onto stack
     // push   r12
     bytes.push(0x41);
     bytes.push(0x54);
@@ -294,13 +350,13 @@ pub fn jit_loop(bytes: &mut Vec<u8>, loop_index: JITPromiseID) {
     bytes.push(0x89);
     bytes.push(0xd2);
 
-    // Call JIT function
+    // Call JIT callback
     // call   r12
     bytes.push(0x41);
     bytes.push(0xff);
     bytes.push(0xd4);
 
-    // Take return value and store as the new data pointer.
+    // Take return value and store as the new data pointer
     // mov    r10,rax
     bytes.push(0x49);
     bytes.push(0x89);
