@@ -164,8 +164,8 @@ impl JITTarget {
         let jit_callback_ptr = Self::jit_callback;
 
         type JITCallbackType = extern "C" fn(&mut JITTarget, JITPromiseID, *mut u8) -> *mut u8;
-        let func: fn(*mut u8, *mut JITTarget, JITCallbackType) -> *mut u8 =
-            unsafe { mem::transmute(self.bytes.as_mut_ptr()) };
+        let func: fn(*mut u8, &mut JITTarget, JITCallbackType) -> *mut u8 =
+            unsafe { mem::transmute(self.bytes.as_ptr()) };
 
         func(mem_ptr, self, jit_callback_ptr)
     }
