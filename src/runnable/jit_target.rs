@@ -98,10 +98,11 @@ impl JITTarget {
 
     /// No-op version for unsupported architectures.
     #[cfg(not(target_arch = "x86_64"))]
-    pub fn new(&self) -> Result<Self, String> {
+    pub fn new(nodes: &VecDeque<ASTNode>) -> Result<Self, String> {
         Err(format!("Unsupported JIT architecture."))
     }
 
+    #[cfg(target_arch = "x86_64")]
     fn new_fragment(nodes: &VecDeque<ASTNode>) -> Self {
         let mut bytes = Vec::new();
         let mut promises = Vec::new();
@@ -117,6 +118,7 @@ impl JITTarget {
     /// Convert a vector of ASTNodes into a sequence of executable bytes.
     ///
     /// r10 is used to hold the data pointer.
+    #[cfg(target_arch = "x86_64")]
     fn shallow_compile(nodes: &VecDeque<ASTNode>, promises: &mut Vec<JITPromise>) -> Vec<u8> {
         let mut bytes = Vec::new();
 
@@ -139,6 +141,7 @@ impl JITTarget {
     }
 
     /// Perform AOT compilation on a loop.
+    #[cfg(target_arch = "x86_64")]
     fn compile_loop(nodes: &VecDeque<ASTNode>, promises: &mut Vec<JITPromise>) -> Vec<u8> {
         let mut bytes = Vec::new();
 
@@ -148,6 +151,7 @@ impl JITTarget {
     }
 
     /// Perform JIT compilation on a loop.
+    #[cfg(target_arch = "x86_64")]
     fn defer_loop(nodes: &VecDeque<ASTNode>, promises: &mut Vec<JITPromise>) -> Vec<u8> {
         let mut bytes = Vec::new();
 
@@ -159,6 +163,7 @@ impl JITTarget {
     }
 
     /// Execute the bytes buffer as a function with context.
+    #[cfg(target_arch = "x86_64")]
     fn exec(&mut self, mem_ptr: *mut u8) -> *mut u8 {
         let jit_callback_ptr = Self::jit_callback;
 
@@ -171,6 +176,7 @@ impl JITTarget {
 
     /// Callback passed into compiled code. Allows for deferred compilation
     /// targets to be compiled, ran, and later re-ran.
+    #[cfg(target_arch = "x86_64")]
     extern "C" fn jit_callback(&mut self, loop_index: JITPromiseID, mem_ptr: *mut u8) -> *mut u8 {
         let promise = &mut self.promises[loop_index];
         let return_ptr;
@@ -191,12 +197,16 @@ impl JITTarget {
 }
 
 impl Runnable for JITTarget {
+    #[cfg(target_arch = "x86_64")]
     fn run(&mut self) {
         let mut bf_mem = vec![0u8; 30_000]; // Memory space used by BrainFuck
         let mem_ptr = bf_mem.as_mut_ptr();
 
         self.exec(mem_ptr);
     }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    fn run(&mut self) {}
 }
 
 #[cfg(target_arch = "x86_64")]
