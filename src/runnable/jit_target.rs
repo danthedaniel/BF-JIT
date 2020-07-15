@@ -1,7 +1,5 @@
 use std::collections::VecDeque;
-use std::fmt;
 use std::mem;
-use std::ops::{Index, IndexMut};
 
 use super::super::code_gen;
 use super::super::parser::ASTNode;
@@ -77,6 +75,7 @@ pub enum JITPromise {
 }
 
 /// Container for executable bytes.
+#[derive(Debug)]
 pub struct JITTarget {
     bytes: Vec<u8>,
     promises: Vec<JITPromise>,
@@ -197,31 +196,6 @@ impl Runnable for JITTarget {
         let mem_ptr = bf_mem.as_mut_ptr();
 
         self.exec(mem_ptr);
-    }
-}
-
-impl Index<usize> for JITTarget {
-    type Output = u8;
-
-    fn index(&self, index: usize) -> &u8 {
-        &self.bytes[index]
-    }
-}
-
-impl IndexMut<usize> for JITTarget {
-    fn index_mut(&mut self, index: usize) -> &mut u8 {
-        &mut self.bytes[index]
-    }
-}
-
-/// Display hexadecimal values for data.
-impl fmt::Debug for JITTarget {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        for byte in self.bytes.iter() {
-            write!(f, "{:02X}", byte)?;
-        }
-
-        writeln!(f)
     }
 }
 
