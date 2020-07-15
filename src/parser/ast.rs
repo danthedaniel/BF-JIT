@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 
 /// BrainFuck AST node
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ASTNode {
     /// Add to the current memory cell.
     Incr(u8),
@@ -28,7 +28,7 @@ pub struct AST {
 
 impl AST {
     /// Convert raw input into an AST.
-    pub fn parse(input: String) -> Result<Self, String> {
+    pub fn parse(input: &str) -> Result<Self, String> {
         let mut output = VecDeque::new();
         let mut loops: VecDeque<VecDeque<ASTNode>> = VecDeque::new();
 
@@ -111,5 +111,29 @@ impl AST {
         }
 
         output
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn too_many_loop_begins() {
+        let ast = AST::parse("[[]");
+        assert!(ast.is_err());
+    }
+
+    #[test]
+    fn too_many_loop_ends() {
+        let ast = AST::parse("[]]");
+        assert!(ast.is_err());
+    }
+
+    #[test]
+    fn run_length_encode() {
+        let ast = AST::parse("+++++").unwrap();
+        assert_eq!(ast.data.len(), 1);
+        assert_eq!(ast.data[0], ASTNode::Incr(5));
     }
 }

@@ -47,7 +47,7 @@ fn main() {
         .unwrap_or_else(|e| e.exit());
 
     let program = read_program(&args.arg_program)
-        .and_then(AST::parse)
+        .and_then(|source| AST::parse(&source))
         .unwrap_or_else(|e| {
             eprintln!("Error occurred while loading program: {}", e);
             exit(1)

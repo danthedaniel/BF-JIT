@@ -136,3 +136,17 @@ impl Runnable for Fucker {
         self.reset();
     }
 }
+
+#[cfg(target_arch = "x86_64")]
+#[cfg(test)]
+mod tests {
+    use super::super::super::parser::AST;
+    use super::*;
+
+    #[test]
+    fn run_hello_world() {
+        let ast = AST::parse(include_str!("../../test/programs/hello_world.bf")).unwrap();
+        let mut fucker = Fucker::new(&ast.data);
+        fucker.run();
+    }
+}
