@@ -24,21 +24,21 @@ const USAGE: &str = "
 Fucker
 
 Usage:
-  fucker [--jit] <program>
+  fucker [--int] <program>
   fucker (-d | --debug) <program>
   fucker (-h | --help)
 
 Options:
   -h --help     Show this screen.
   -d --debug    Display intermediate language.
-  --jit         JIT compile the program before running (x86-64 only).
+  --int         Use an interpreter instead of the JIT compiler.
 ";
 
 #[derive(Debug, Deserialize)]
 struct Args {
     arg_program: String,
     flag_debug: bool,
-    flag_jit: bool,
+    flag_int: bool,
 }
 
 fn main() {
@@ -59,14 +59,17 @@ fn main() {
         return;
     }
 
-    let mut runnable: Box<dyn Runnable> = if args.flag_jit {
-        let jit_target = JITTarget::new(&program.data).unwrap_or_else(|msg| {
-            eprintln!("Error occurred while compiling program: {}", msg);
-            exit(1)
-        });
-        Box::new(jit_target)
-    } else {
+    let mut runnable: Box<dyn Runnable> = if args.flag_int {
         Box::new(Fucker::new(&program.data))
+    } else {
+        match JITTarget::new(&program.data) {
+            Ok(jit_target) => Box::new(jit_target),
+            Err(msg) => {
+                eprintln!("Error occurred while compiling program: {}", msg);
+                eprintln!("Falling back to interpreter");
+                Box::new(Fucker::new(&program.data))
+            }
+        }
     };
 
     runnable.run();
