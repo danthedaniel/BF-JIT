@@ -119,9 +119,7 @@ impl JITTarget {
         }
     }
 
-    /// Convert a vector of ASTNodes into a sequence of executable bytes.
-    ///
-    /// r10 is used to hold the data pointer.
+    /// Compile a vector of ASTNodes into executable bytes.
     #[cfg(target_arch = "x86_64")]
     fn shallow_compile(nodes: &VecDeque<ASTNode>, promises: &mut Vec<JITPromise>) -> Vec<u8> {
         let mut bytes = Vec::new();
@@ -169,13 +167,11 @@ impl JITTarget {
     /// Execute the bytes buffer as a function with context.
     #[cfg(target_arch = "x86_64")]
     fn exec(&mut self, mem_ptr: *mut u8) -> *mut u8 {
-        let jit_callback_ptr = Self::jit_callback;
-
         type JITCallbackType = extern "C" fn(&mut JITTarget, JITPromiseID, *mut u8) -> *mut u8;
         let func: fn(*mut u8, &mut JITTarget, JITCallbackType) -> *mut u8 =
             unsafe { mem::transmute(self.bytes.as_ptr()) };
 
-        func(mem_ptr, self, jit_callback_ptr)
+        func(mem_ptr, self, Self::jit_callback)
     }
 
     /// Callback passed into compiled code. Allows for deferred compilation
