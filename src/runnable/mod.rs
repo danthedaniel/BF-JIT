@@ -8,6 +8,7 @@ pub trait Runnable {
 }
 
 mod fucker;
+mod immutable;
 mod jit_target;
 
 pub use self::fucker::Fucker;

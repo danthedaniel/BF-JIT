@@ -3,6 +3,7 @@ use std::mem;
 
 use super::super::code_gen;
 use super::super::parser::ASTNode;
+use super::immutable::Immutable;
 
 use libc::{sysconf, _SC_PAGESIZE};
 
@@ -40,7 +41,10 @@ fn int_ceil(numerator: usize, denominator: usize) -> usize {
 }
 
 /// Clone a vector of bytes into new executable memory pages.
-fn make_executable(source: &Vec<u8>) -> Vec<u8> {
+///
+/// The returned vector is immutable because re-allocation could result in lost
+/// memory protection settings.
+fn make_executable(source: &Vec<u8>) -> Immutable<Vec<u8>> {
     let size = int_ceil(source.len(), *PAGE_SIZE);
     let mut data: Vec<u8>;
 
@@ -62,7 +66,7 @@ fn make_executable(source: &Vec<u8>) -> Vec<u8> {
         data[index] = byte;
     }
 
-    data
+    Immutable::new(data)
 }
 
 pub type JITPromiseID = usize;
@@ -77,7 +81,7 @@ pub enum JITPromise {
 /// Container for executable bytes.
 #[derive(Debug)]
 pub struct JITTarget {
-    bytes: Vec<u8>,
+    bytes: Immutable<Vec<u8>>,
     promises: Vec<JITPromise>,
 }
 
