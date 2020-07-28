@@ -132,10 +132,10 @@ impl JITTarget {
                 ASTNode::Prev(n) => code_gen::prev(&mut bytes, *n),
                 ASTNode::Print => code_gen::print(&mut bytes, jit_functions::print),
                 ASTNode::Read => code_gen::read(&mut bytes, jit_functions::read),
-                ASTNode::Loop(nodes) if nodes.len() >= INLINE_THRESHOLD => {
-                    bytes.extend(Self::defer_loop(nodes, promises))
+                ASTNode::Loop(nodes) if nodes.len() < INLINE_THRESHOLD => {
+                    bytes.extend(Self::compile_loop(nodes, promises))
                 }
-                ASTNode::Loop(nodes) => bytes.extend(Self::compile_loop(nodes, promises)),
+                ASTNode::Loop(nodes) => bytes.extend(Self::defer_loop(nodes, promises)),
             };
         }
 
