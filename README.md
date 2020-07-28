@@ -22,9 +22,9 @@ Options:
 ## What is BrainFuck?
 
 [BrainFuck](https://en.wikipedia.org/wiki/Brainfuck) is an esoteric programming
-language designed as a joke. The environment provides the programmer with an
-"infinite" array of unsigned bytes and a data pointer. There are only 8 single
-character commands:
+language designed to be both turing complete and easy to compile. The environment
+provides the programmer with an a 30,000 cell array of unsigned bytes and a data
+pointer. There are only 8 single character commands:
 
 * `+` : Increment the current memory cell by 1 (with wrapping overflow)
 * `-` : Decrememt the current memory cell by 1 (with wrapping underflow)
