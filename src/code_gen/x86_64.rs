@@ -1,6 +1,6 @@
 use std::mem;
 
-use super::super::runnable::JITPromiseID;
+use crate::runnable::JITPromiseID;
 
 /// Convert an expression to a native-endian order byte array after a type cast.
 macro_rules! to_ne_bytes {

@@ -4,7 +4,7 @@ use std::io::Write;
 
 use libc::getchar;
 
-use super::super::parser::{ASTNode, Instr};
+use crate::parser::{ASTNode, Instr};
 use super::Runnable;
 
 /// BrainFuck virtual machine
@@ -140,7 +140,7 @@ impl Runnable for Fucker {
 #[cfg(target_arch = "x86_64")]
 #[cfg(test)]
 mod tests {
-    use super::super::super::parser::AST;
+    use crate::parser::AST;
     use super::*;
 
     #[test]

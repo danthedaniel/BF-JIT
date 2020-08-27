@@ -1,9 +1,9 @@
 use std::collections::VecDeque;
 use std::mem;
 
-use super::super::code_gen;
-use super::super::parser::ASTNode;
-use super::immutable::Immutable;
+use crate::code_gen;
+use crate::parser::ASTNode;
+use crate::runnable::immutable::Immutable;
 
 use libc::{sysconf, _SC_PAGESIZE};
 
@@ -212,7 +212,7 @@ impl Runnable for JITTarget {
 #[cfg(target_arch = "x86_64")]
 #[cfg(test)]
 mod tests {
-    use super::super::super::parser::AST;
+    use crate::parser::AST;
     use super::*;
 
     #[test]
