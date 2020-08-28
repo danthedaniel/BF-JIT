@@ -4,7 +4,7 @@
 /// Rather than this trait FnMut would have been used were it a stable feature.
 pub trait Runnable {
     /// Invoke this type.
-    fn run(&mut self) -> ();
+    fn run(&mut self);
 }
 
 mod fucker;
