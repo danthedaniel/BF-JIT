@@ -30,7 +30,7 @@ impl AST {
     /// Convert raw input into an AST.
     pub fn parse(input: &str) -> Result<Self, String> {
         let mut output = VecDeque::new();
-        let mut loops: VecDeque<VecDeque<ASTNode>> = VecDeque::new();
+        let mut loops = VecDeque::new();
 
         for character in input.chars() {
             let next_node = match character {
