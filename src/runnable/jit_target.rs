@@ -1,5 +1,8 @@
+use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::rc::Rc;
 use std::mem;
+use std::ops::Deref;
 
 use crate::code_gen;
 use crate::parser::ASTNode;
@@ -72,29 +75,79 @@ fn make_executable(source: &[u8]) -> Immutable<Vec<u8>> {
 pub type JITPromiseID = usize;
 
 /// Holds ASTNodes for later compilation.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum JITPromise {
     Deferred(VecDeque<ASTNode>),
     Compiled(JITTarget),
 }
 
+impl JITPromise {
+    pub fn source(&self) -> &VecDeque<ASTNode> {
+        match self {
+            JITPromise::Deferred(source) => source,
+            JITPromise::Compiled(JITTarget { source, ..}) => source,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PromisePool(Rc<RefCell<Vec<Option<JITPromise>>>>);
+
+impl PromisePool {
+    pub fn new() -> Self {
+        PromisePool(Rc::new(RefCell::new(Vec::new())))
+    }
+
+    /// By either searching for an equivalent promise, or creating a new one,
+    /// return a promise ID for a vector of ASTNodes.
+    pub fn add(&mut self, nodes: VecDeque<ASTNode>) -> JITPromiseID {
+        let mut promises_inner = self.0.borrow_mut();
+
+        for (index, promise) in promises_inner.iter().enumerate() {
+            if let Some(promise) = promise {
+                if promise.source() == &nodes {
+                    return index;
+                }
+            }
+        }
+
+        // If this is a new promise, add it to the pool.
+        promises_inner.push(Some(JITPromise::Deferred(nodes)));
+        return promises_inner.len() - 1;
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.borrow().len()
+    }
+}
+
+impl Deref for PromisePool {
+    type Target = Rc<RefCell<Vec<Option<JITPromise>>>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 /// Container for executable bytes.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct JITTarget {
+    source: VecDeque<ASTNode>,
     bytes: Immutable<Vec<u8>>,
-    promises: Vec<JITPromise>,
+    promises: PromisePool,
 }
 
 impl JITTarget {
     /// Initialize a JIT compiled version of a program.
     #[cfg(target_arch = "x86_64")]
-    pub fn new(nodes: &VecDeque<ASTNode>) -> Result<Self, String> {
+    pub fn new(nodes: VecDeque<ASTNode>) -> Result<Self, String> {
         let mut bytes = Vec::new();
-        let mut promises = Vec::new();
+        let promises = PromisePool::new();
 
-        code_gen::wrapper(&mut bytes, Self::shallow_compile(nodes, &mut promises));
+        code_gen::wrapper(&mut bytes, Self::shallow_compile(nodes.clone(), promises.clone()));
 
         Ok(Self {
+            source: nodes,
             bytes: make_executable(&bytes),
             promises,
         })
@@ -102,18 +155,18 @@ impl JITTarget {
 
     /// No-op version for unsupported architectures.
     #[cfg(not(target_arch = "x86_64"))]
-    pub fn new(nodes: &VecDeque<ASTNode>) -> Result<Self, String> {
+    pub fn new(nodes: VecDeque<ASTNode>) -> Result<Self, String> {
         Err(format!("Unsupported JIT architecture."))
     }
 
     #[cfg(target_arch = "x86_64")]
-    fn new_fragment(nodes: &VecDeque<ASTNode>) -> Self {
+    fn new_fragment(nodes: VecDeque<ASTNode>, promises: PromisePool) -> Self {
         let mut bytes = Vec::new();
-        let mut promises = Vec::new();
 
-        code_gen::wrapper(&mut bytes, Self::compile_loop(nodes, &mut promises));
+        code_gen::wrapper(&mut bytes, Self::compile_loop(nodes.clone(), promises.clone()));
 
         Self {
+            source: nodes,
             bytes: make_executable(&bytes),
             promises,
         }
@@ -121,21 +174,21 @@ impl JITTarget {
 
     /// Compile a vector of ASTNodes into executable bytes.
     #[cfg(target_arch = "x86_64")]
-    fn shallow_compile(nodes: &VecDeque<ASTNode>, promises: &mut Vec<JITPromise>) -> Vec<u8> {
+    fn shallow_compile(nodes: VecDeque<ASTNode>, promises: PromisePool) -> Vec<u8> {
         let mut bytes = Vec::new();
 
         for node in nodes {
             match node {
-                ASTNode::Incr(n) => code_gen::incr(&mut bytes, *n),
-                ASTNode::Decr(n) => code_gen::decr(&mut bytes, *n),
-                ASTNode::Next(n) => code_gen::next(&mut bytes, *n),
-                ASTNode::Prev(n) => code_gen::prev(&mut bytes, *n),
+                ASTNode::Incr(n) => code_gen::incr(&mut bytes, n),
+                ASTNode::Decr(n) => code_gen::decr(&mut bytes, n),
+                ASTNode::Next(n) => code_gen::next(&mut bytes, n),
+                ASTNode::Prev(n) => code_gen::prev(&mut bytes, n),
                 ASTNode::Print => code_gen::print(&mut bytes, jit_functions::print),
                 ASTNode::Read => code_gen::read(&mut bytes, jit_functions::read),
                 ASTNode::Loop(nodes) if nodes.len() < INLINE_THRESHOLD => {
-                    bytes.extend(Self::compile_loop(nodes, promises))
+                    bytes.extend(Self::compile_loop(nodes, promises.clone()))
                 }
-                ASTNode::Loop(nodes) => bytes.extend(Self::defer_loop(nodes, promises)),
+                ASTNode::Loop(nodes) => bytes.extend(Self::defer_loop(nodes, promises.clone())),
             };
         }
 
@@ -144,7 +197,7 @@ impl JITTarget {
 
     /// Perform AOT compilation on a loop.
     #[cfg(target_arch = "x86_64")]
-    fn compile_loop(nodes: &VecDeque<ASTNode>, promises: &mut Vec<JITPromise>) -> Vec<u8> {
+    fn compile_loop(nodes: VecDeque<ASTNode>, promises: PromisePool) -> Vec<u8> {
         let mut bytes = Vec::new();
 
         code_gen::aot_loop(&mut bytes, Self::shallow_compile(nodes, promises));
@@ -154,12 +207,10 @@ impl JITTarget {
 
     /// Perform JIT compilation on a loop.
     #[cfg(target_arch = "x86_64")]
-    fn defer_loop(nodes: &VecDeque<ASTNode>, promises: &mut Vec<JITPromise>) -> Vec<u8> {
+    fn defer_loop(nodes: VecDeque<ASTNode>, mut promises: PromisePool) -> Vec<u8> {
         let mut bytes = Vec::new();
 
-        promises.push(JITPromise::Deferred(nodes.clone()));
-
-        code_gen::jit_loop(&mut bytes, promises.len() - 1);
+        code_gen::jit_loop(&mut bytes, promises.add(nodes));
 
         bytes
     }
@@ -177,20 +228,24 @@ impl JITTarget {
     /// Callback passed into compiled code. Allows for deferred compilation
     /// targets to be compiled, ran, and later re-ran.
     #[cfg(target_arch = "x86_64")]
-    extern "C" fn jit_callback(&mut self, loop_index: JITPromiseID, mem_ptr: *mut u8) -> *mut u8 {
-        let promise = &mut self.promises[loop_index];
+    extern "C" fn jit_callback(&mut self, promise_id: JITPromiseID, mem_ptr: *mut u8) -> *mut u8 {
+        let mut promise = self.promises.borrow_mut()[promise_id].take().expect("Someone forgot to put a promise back");
         let return_ptr;
+        let new_promise;
 
         match promise {
             JITPromise::Deferred(nodes) => {
-                let mut new_target = Self::new_fragment(nodes);
+                let mut new_target = Self::new_fragment(nodes, self.promises.clone());
                 return_ptr = new_target.exec(mem_ptr);
-                *promise = JITPromise::Compiled(new_target);
+                new_promise = Some(JITPromise::Compiled(new_target));
             }
-            JITPromise::Compiled(jit_target) => {
+            JITPromise::Compiled(ref mut jit_target) => {
                 return_ptr = jit_target.exec(mem_ptr);
+                new_promise = Some(promise);
             }
         };
+
+        self.promises.borrow_mut()[promise_id] = new_promise;
 
         return_ptr
     }
@@ -203,6 +258,8 @@ impl Runnable for JITTarget {
         let mem_ptr = bf_mem.as_mut_ptr();
 
         self.exec(mem_ptr);
+
+        println!("{:?}", self.promises.len());
     }
 
     #[cfg(not(target_arch = "x86_64"))]
@@ -218,14 +275,14 @@ mod tests {
     #[test]
     fn run_hello_world() {
         let ast = AST::parse(include_str!("../../test/programs/hello_world.bf")).unwrap();
-        let mut jit_target = JITTarget::new(&ast.data).unwrap();
+        let mut jit_target = JITTarget::new(ast.data).unwrap();
         jit_target.run();
     }
 
     #[test]
     fn run_mandelbrot() {
         let ast = AST::parse(include_str!("../../test/programs/mandelbrot.bf")).unwrap();
-        let mut jit_target = JITTarget::new(&ast.data).unwrap();
+        let mut jit_target = JITTarget::new(ast.data).unwrap();
         jit_target.run();
     }
 }

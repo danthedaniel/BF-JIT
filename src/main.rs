@@ -60,14 +60,13 @@ fn main() {
     }
 
     let mut runnable: Box<dyn Runnable> = if args.flag_int {
-        Box::new(Fucker::new(&program.data))
+        Box::new(Fucker::new(program.data))
     } else {
-        match JITTarget::new(&program.data) {
+        match JITTarget::new(program.data) {
             Ok(jit_target) => Box::new(jit_target),
             Err(msg) => {
-                eprintln!("Error occurred while compiling program: {}", msg);
-                eprintln!("Falling back to interpreter");
-                Box::new(Fucker::new(&program.data))
+                eprintln!("Error occurred while JIT compiling program: {}", msg);
+                return;
             }
         }
     };

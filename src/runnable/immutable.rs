@@ -1,7 +1,7 @@
 use std::ops::Deref;
 
 /// A container for values that can only be deref'd immutably.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Immutable<T> {
     value: T,
 }
@@ -17,5 +17,11 @@ impl<T> Deref for Immutable<T> {
 
     fn deref(&self) -> &Self::Target {
         &self.value
+    }
+}
+
+impl<T: PartialEq> PartialEq<Self> for Immutable<T> {
+    fn eq(&self, other: &Self) -> bool {
+        **self == **other
     }
 }

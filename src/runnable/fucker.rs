@@ -18,7 +18,7 @@ pub struct Fucker {
 }
 
 impl Fucker {
-    pub fn new(nodes: &VecDeque<ASTNode>) -> Self {
+    pub fn new(nodes: VecDeque<ASTNode>) -> Self {
         Fucker {
             program: Self::compile(nodes),
             memory: vec![0u8; 0x4000],
@@ -27,15 +27,15 @@ impl Fucker {
         }
     }
 
-    fn compile(nodes: &VecDeque<ASTNode>) -> Vec<Instr> {
+    fn compile(nodes: VecDeque<ASTNode>) -> Vec<Instr> {
         let mut instrs = Vec::new();
 
         for node in nodes {
             match node {
-                ASTNode::Incr(n) => instrs.push(Instr::Incr(*n)),
-                ASTNode::Decr(n) => instrs.push(Instr::Decr(*n)),
-                ASTNode::Next(n) => instrs.push(Instr::Next(*n)),
-                ASTNode::Prev(n) => instrs.push(Instr::Prev(*n)),
+                ASTNode::Incr(n) => instrs.push(Instr::Incr(n)),
+                ASTNode::Decr(n) => instrs.push(Instr::Decr(n)),
+                ASTNode::Next(n) => instrs.push(Instr::Next(n)),
+                ASTNode::Prev(n) => instrs.push(Instr::Prev(n)),
                 ASTNode::Print => instrs.push(Instr::Print),
                 ASTNode::Read => instrs.push(Instr::Read),
                 ASTNode::Loop(vec) => {
@@ -146,7 +146,7 @@ mod tests {
     #[test]
     fn run_hello_world() {
         let ast = AST::parse(include_str!("../../test/programs/hello_world.bf")).unwrap();
-        let mut fucker = Fucker::new(&ast.data);
+        let mut fucker = Fucker::new(ast.data);
         fucker.run();
     }
 }
