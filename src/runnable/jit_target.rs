@@ -115,10 +115,6 @@ impl PromisePool {
         promises_inner.push(Some(JITPromise::Deferred(nodes)));
         return promises_inner.len() - 1;
     }
-
-    pub fn len(&self) -> usize {
-        self.0.borrow().len()
-    }
 }
 
 impl Deref for PromisePool {
@@ -266,8 +262,6 @@ impl Runnable for JITTarget {
         let mem_ptr = bf_mem.as_mut_ptr();
 
         self.exec(mem_ptr);
-
-        println!("{:?}", self.promises.len());
     }
 
     #[cfg(not(target_arch = "x86_64"))]
