@@ -4,8 +4,8 @@ use std::io::Write;
 
 use libc::getchar;
 
-use crate::parser::{ASTNode, Instr};
 use super::Runnable;
+use crate::parser::{ASTNode, Instr};
 
 /// BrainFuck virtual machine
 pub struct Fucker {
@@ -140,8 +140,8 @@ impl Runnable for Fucker {
 #[cfg(target_arch = "x86_64")]
 #[cfg(test)]
 mod tests {
-    use crate::parser::AST;
     use super::*;
+    use crate::parser::AST;
 
     #[test]
     fn run_hello_world() {

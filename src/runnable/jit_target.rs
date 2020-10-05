@@ -1,8 +1,8 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
-use std::rc::Rc;
 use std::mem;
 use std::ops::Deref;
+use std::rc::Rc;
 
 use crate::code_gen;
 use crate::parser::ASTNode;
@@ -85,7 +85,7 @@ impl JITPromise {
     pub fn source(&self) -> &VecDeque<ASTNode> {
         match self {
             JITPromise::Deferred(source) => source,
-            JITPromise::Compiled(JITTarget { source, ..}) => source,
+            JITPromise::Compiled(JITTarget { source, .. }) => source,
         }
     }
 }
@@ -144,7 +144,10 @@ impl JITTarget {
         let mut bytes = Vec::new();
         let promises = PromisePool::new();
 
-        code_gen::wrapper(&mut bytes, Self::shallow_compile(nodes.clone(), promises.clone()));
+        code_gen::wrapper(
+            &mut bytes,
+            Self::shallow_compile(nodes.clone(), promises.clone()),
+        );
 
         Ok(Self {
             source: nodes,
@@ -163,7 +166,10 @@ impl JITTarget {
     fn new_fragment(nodes: VecDeque<ASTNode>, promises: PromisePool) -> Self {
         let mut bytes = Vec::new();
 
-        code_gen::wrapper(&mut bytes, Self::compile_loop(nodes.clone(), promises.clone()));
+        code_gen::wrapper(
+            &mut bytes,
+            Self::compile_loop(nodes.clone(), promises.clone()),
+        );
 
         Self {
             source: nodes,
@@ -229,7 +235,9 @@ impl JITTarget {
     /// targets to be compiled, ran, and later re-ran.
     #[cfg(target_arch = "x86_64")]
     extern "C" fn jit_callback(&mut self, promise_id: JITPromiseID, mem_ptr: *mut u8) -> *mut u8 {
-        let mut promise = self.promises.borrow_mut()[promise_id].take().expect("Someone forgot to put a promise back");
+        let mut promise = self.promises.borrow_mut()[promise_id]
+            .take()
+            .expect("Someone forgot to put a promise back");
         let return_ptr;
         let new_promise;
 
@@ -269,8 +277,8 @@ impl Runnable for JITTarget {
 #[cfg(target_arch = "x86_64")]
 #[cfg(test)]
 mod tests {
-    use crate::parser::AST;
     use super::*;
+    use crate::parser::AST;
 
     #[test]
     fn run_hello_world() {
