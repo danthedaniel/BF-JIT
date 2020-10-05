@@ -75,7 +75,7 @@ fn make_executable(source: &[u8]) -> Immutable<Vec<u8>> {
 pub type JITPromiseID = usize;
 
 /// Holds ASTNodes for later compilation.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum JITPromise {
     Deferred(VecDeque<ASTNode>),
     Compiled(JITTarget),
@@ -130,7 +130,7 @@ impl Deref for PromisePool {
 }
 
 /// Container for executable bytes.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct JITTarget {
     source: VecDeque<ASTNode>,
     bytes: Immutable<Vec<u8>>,
