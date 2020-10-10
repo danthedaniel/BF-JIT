@@ -9,14 +9,14 @@ rust.
 ## Usage
 
 ```
-  fucker [--jit] <program>
+  fucker [--int] <program>
   fucker (-d | --debug) <program>
   fucker (-h | --help)
 
 Options:
   -h --help     Show this screen.
   -d --debug    Display intermediate language.
-  --jit         JIT compile the program before running (x86-64 only).
+  --int         Use an interpreter instead of the JIT compiler.
 ```
 
 ## What is BrainFuck?
