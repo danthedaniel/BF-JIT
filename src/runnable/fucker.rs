@@ -38,6 +38,7 @@ impl Fucker {
                 ASTNode::Prev(n) => instrs.push(Instr::Prev(n)),
                 ASTNode::Print => instrs.push(Instr::Print),
                 ASTNode::Read => instrs.push(Instr::Read),
+                ASTNode::Set(n) => instrs.push(Instr::Set(n)),
                 ASTNode::Loop(vec) => {
                     let inner_loop = Self::compile(vec);
                     // Add 1 to the offset to account for the BeginLoop/EndLoop instr
@@ -102,6 +103,9 @@ impl Fucker {
             }
             Instr::Read => {
                 self.memory[self.dp] = unsafe { getchar() as u8 };
+            }
+            Instr::Set(n) => {
+                self.memory[self.dp] = n;
             }
             Instr::BeginLoop(offset) => {
                 if current == 0 {

@@ -266,6 +266,16 @@ pub fn read(bytes: &mut Vec<u8>, read_fn: extern "C" fn() -> u8) {
 }
 
 #[inline]
+pub fn set(bytes: &mut Vec<u8>, value: u8) {
+    // Set current memory cell to the value
+    // mov    BYTE PTR [r10],value
+    bytes.push(0x41);
+    bytes.push(0xc6);
+    bytes.push(0x02);
+    bytes.push(value);
+}
+
+#[inline]
 pub fn aot_loop(bytes: &mut Vec<u8>, inner_loop_bytes: Vec<u8>) {
     let inner_loop_size = inner_loop_bytes.len() as i32;
 

@@ -15,6 +15,8 @@ pub enum Instr {
     Print,
     /// Read one character from stdin.
     Read,
+    /// Set a value for the current cell.
+    Set(u8),
     /// If the current memory cell is 0, jump forward by the contained offset.
     BeginLoop(usize),
     /// If the current memory cell is not 0, jump backward by the contained offset.
@@ -35,6 +37,7 @@ impl fmt::Debug for Instr {
             Instr::Prev(n) => write!(f, "PREV\t0x{:04X}", n),
             Instr::Print => write!(f, "PRINT"),
             Instr::Read => write!(f, "READ"),
+            Instr::Set(n) => write!(f, "SET\t0x{:04X}", n),
             Instr::BeginLoop(end_pos) => write!(f, "BEGIN\t0x{:04X}", end_pos),
             Instr::EndLoop(ret_pos) => write!(f, "END\t0x{:04X}", ret_pos),
         }

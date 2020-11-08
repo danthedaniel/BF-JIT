@@ -15,6 +15,8 @@ pub enum ASTNode {
     Print,
     /// Read one character from stdin.
     Read,
+    /// Set a literal value in the current cell.
+    Set(u8),
     /// Loop over the contained instructions while the current memory cell is
     /// not zero.
     Loop(VecDeque<ASTNode>),
@@ -62,7 +64,11 @@ impl AST {
                         continue;
                     }
 
-                    ASTNode::Loop(Self::shallow_run_length_optimize(&mut current_loop))
+                    if Self::is_zero_loop(&current_loop) {
+                        ASTNode::Set(0)
+                    } else {
+                        ASTNode::Loop(Self::shallow_combine_nodes(&mut current_loop))
+                    }
                 }
                 // All other characters are comments and will be ignored
                 _ => continue,
@@ -79,12 +85,20 @@ impl AST {
         }
 
         Ok(AST {
-            data: Self::shallow_run_length_optimize(&mut output),
+            data: Self::shallow_combine_nodes(&mut output),
         })
     }
 
+    fn is_zero_loop(input: &VecDeque<ASTNode>) -> bool {
+        if input.len() != 1 {
+            return false;
+        }
+
+        return input[0] == ASTNode::Decr(1);
+    }
+
     /// Convert runs of +, -, < and > into bulk operations.
-    fn shallow_run_length_optimize(input: &mut VecDeque<ASTNode>) -> VecDeque<ASTNode> {
+    fn shallow_combine_nodes(input: &mut VecDeque<ASTNode>) -> VecDeque<ASTNode> {
         let mut output = VecDeque::new();
 
         while let Some(next_node) = input.pop_front() {
@@ -94,10 +108,14 @@ impl AST {
             // output Vec is the same, then increment that instruction instead
             // of adding another identical instruction.
             let combined = match (prev_node, &next_node) {
+                // Combine sequential Incr, Decr, Next and Prev
                 (Some(ASTNode::Incr(b)), ASTNode::Incr(a)) => ASTNode::Incr(a.wrapping_add(*b)),
                 (Some(ASTNode::Decr(b)), ASTNode::Decr(a)) => ASTNode::Decr(a.wrapping_add(*b)),
                 (Some(ASTNode::Next(b)), ASTNode::Next(a)) => ASTNode::Next(a.wrapping_add(*b)),
                 (Some(ASTNode::Prev(b)), ASTNode::Prev(a)) => ASTNode::Prev(a.wrapping_add(*b)),
+                // Combine Incr or Decr with Set
+                (Some(ASTNode::Set(a)), ASTNode::Incr(b)) => ASTNode::Set(a.wrapping_add(*b)),
+                (Some(ASTNode::Set(a)), ASTNode::Decr(b)) => ASTNode::Set(a.wrapping_sub(*b)),
                 _ => {
                     // Node is not combineable, just move into the output vector
                     output.push_back(next_node);
