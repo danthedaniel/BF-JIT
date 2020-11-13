@@ -17,6 +17,8 @@ pub enum ASTNode {
     Read,
     /// Set a literal value in the current cell.
     Set(u8),
+    /// Add the current cell to the cell n spaces away and set the current cell to 0.
+    Move(isize),
     /// Loop over the contained instructions while the current memory cell is
     /// not zero.
     Loop(VecDeque<ASTNode>),
@@ -64,11 +66,9 @@ impl AST {
                         continue;
                     }
 
-                    if Self::is_zero_loop(&current_loop) {
-                        ASTNode::Set(0)
-                    } else {
-                        ASTNode::Loop(Self::shallow_combine_nodes(&mut current_loop))
-                    }
+                    current_loop = Self::shallow_combine_nodes(&mut current_loop);
+
+                    Self::loop_equivalent(&current_loop).unwrap_or(ASTNode::Loop(current_loop))
                 }
                 // All other characters are comments and will be ignored
                 _ => continue,
@@ -89,12 +89,34 @@ impl AST {
         })
     }
 
-    fn is_zero_loop(input: &VecDeque<ASTNode>) -> bool {
-        if input.len() != 1 {
-            return false;
+    fn loop_equivalent(input: &VecDeque<ASTNode>) -> Option<ASTNode> {
+        // Zero loop
+        if (input.len() == 1) && (input[0] == ASTNode::Decr(1)) {
+            return Some(ASTNode::Set(0));
         }
 
-        return input[0] == ASTNode::Decr(1);
+        // Move current cell if not 0
+        if input.len() == 4 {
+            match (&input[0], &input[1], &input[2], &input[3]) {
+                // Move current cell $a cells left.
+                (ASTNode::Decr(1), ASTNode::Prev(a), ASTNode::Incr(1), ASTNode::Next(b))
+                    if *a == *b =>
+                {
+                    let offset = -(*a as isize);
+                    return Some(ASTNode::Move(offset));
+                }
+                // Move current cell $a cells right.
+                (ASTNode::Decr(1), ASTNode::Next(a), ASTNode::Incr(1), ASTNode::Prev(b))
+                    if *a == *b =>
+                {
+                    let offset = *a as isize;
+                    return Some(ASTNode::Move(offset));
+                }
+                _ => return None,
+            };
+        }
+
+        None
     }
 
     /// Convert runs of +, -, < and > into bulk operations.
