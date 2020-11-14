@@ -89,10 +89,15 @@ impl AST {
         })
     }
 
+    /// If a shorthand for the provided loop exists, return that.
     fn loop_equivalent(input: &VecDeque<ASTNode>) -> Option<ASTNode> {
         // Zero loop
-        if (input.len() == 1) && (input[0] == ASTNode::Decr(1)) {
-            return Some(ASTNode::Set(0));
+        if input.len() == 1 {
+            match input[0] {
+                ASTNode::Incr(1) => return Some(ASTNode::Set(0)),
+                ASTNode::Decr(1) => return Some(ASTNode::Set(0)),
+                _ => return None,
+            }
         }
 
         // Move current cell if not 0
