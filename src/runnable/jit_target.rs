@@ -109,6 +109,20 @@ impl PromisePool {
                     return index;
                 }
             }
+            // It's possible for `promise` to be None here. If the call stack
+            // look like:
+            //
+            // * PromisePool::add
+            // * JITTarget::defer_loop
+            // * JITTarget::shallow_compile
+            // * JITTarget::new_fragment
+            // * JITTarget::jit_callback
+            //
+            // then the JITPromise that was plucked from this PromisePool in
+            // JITTarget::jit_callback has not been placed back into the pool
+            // yet. This won't lead to duplicates and thus is not a problem
+            // since it is not possible for a loop to contain itself.
+            // (i.e. BrainFuck does not support recursion).
         }
 
         // If this is a new promise, add it to the pool.
