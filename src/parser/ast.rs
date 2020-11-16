@@ -18,7 +18,7 @@ pub enum ASTNode {
     /// Set a literal value in the current cell.
     Set(u8),
     /// Add the current cell to the cell n spaces away and set the current cell to 0.
-    Move(isize),
+    Add(isize),
     /// Loop over the contained instructions while the current memory cell is
     /// not zero.
     Loop(VecDeque<ASTNode>),
@@ -108,14 +108,14 @@ impl AST {
                     if *a == *b =>
                 {
                     let offset = -(*a as isize);
-                    return Some(ASTNode::Move(offset));
+                    return Some(ASTNode::Add(offset));
                 }
                 // Move current cell $a cells right.
                 (ASTNode::Decr(1), ASTNode::Next(a), ASTNode::Incr(1), ASTNode::Prev(b))
                     if *a == *b =>
                 {
                     let offset = *a as isize;
-                    return Some(ASTNode::Move(offset));
+                    return Some(ASTNode::Add(offset));
                 }
                 _ => return None,
             };

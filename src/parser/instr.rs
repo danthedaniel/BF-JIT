@@ -18,7 +18,7 @@ pub enum Instr {
     /// Set a value for the current cell.
     Set(u8),
     /// Add the current cell to the cell n spaces away and set the current cell to 0.
-    Move(isize),
+    Add(isize),
     /// If the current memory cell is 0, jump forward by the contained offset.
     BeginLoop(usize),
     /// If the current memory cell is not 0, jump backward by the contained offset.
@@ -40,7 +40,7 @@ impl fmt::Debug for Instr {
             Instr::Print => write!(f, "PRINT"),
             Instr::Read => write!(f, "READ"),
             Instr::Set(n) => write!(f, "SET\t0x{:04X}", n),
-            Instr::Move(n) => write!(f, "MOVE\t0x{:04x}", n),
+            Instr::Add(n) => write!(f, "ADD\t0x{:04x}", n),
             Instr::BeginLoop(end_pos) => write!(f, "BEGIN\t0x{:04X}", end_pos),
             Instr::EndLoop(ret_pos) => write!(f, "END\t0x{:04X}", ret_pos),
         }

@@ -277,64 +277,41 @@ pub fn set(bytes: &mut Vec<u8>, value: u8) {
 
 #[inline]
 pub fn move_cell(bytes: &mut Vec<u8>, offset: isize) {
-    let mut move_code = Vec::new();
-
     // Copy the current cell into EAX.
     // movzx  eax,BYTE PTR [r10]
-    move_code.push(0x41);
-    move_code.push(0x0f);
-    move_code.push(0xb6);
-    move_code.push(0x02);
+    bytes.push(0x41);
+    bytes.push(0x0f);
+    bytes.push(0xb6);
+    bytes.push(0x02);
 
     let offset_bytes = offset.to_ne_bytes();
 
     // Set r13 to the offset.
     // movabs r13,offset
-    move_code.push(0x49);
-    move_code.push(0xbd);
-    move_code.push(offset_bytes[0]);
-    move_code.push(offset_bytes[1]);
-    move_code.push(offset_bytes[2]);
-    move_code.push(offset_bytes[3]);
-    move_code.push(offset_bytes[4]);
-    move_code.push(offset_bytes[5]);
-    move_code.push(offset_bytes[6]);
-    move_code.push(offset_bytes[7]);
+    bytes.push(0x49);
+    bytes.push(0xbd);
+    bytes.push(offset_bytes[0]);
+    bytes.push(offset_bytes[1]);
+    bytes.push(offset_bytes[2]);
+    bytes.push(offset_bytes[3]);
+    bytes.push(offset_bytes[4]);
+    bytes.push(offset_bytes[5]);
+    bytes.push(offset_bytes[6]);
+    bytes.push(offset_bytes[7]);
 
     // Add the current cell (now in EAX) to the cell at the offset.
     // add    BYTE PTR [r10+r13],al
-    move_code.push(0x43);
-    move_code.push(0x00);
-    move_code.push(0x04);
-    move_code.push(0x2a);
+    bytes.push(0x43);
+    bytes.push(0x00);
+    bytes.push(0x04);
+    bytes.push(0x2a);
 
     // Set the current memory cell to 0.
     // mov    BYTE PTR [r10],0
-    move_code.push(0x41);
-    move_code.push(0xc6);
-    move_code.push(0x02);
-    move_code.push(0x00);
-
-    // Check if the current memory cell equals zero.
-    // cmp    BYTE PTR [r10],0x0
-    move_code.push(0x41);
-    move_code.push(0x80);
-    move_code.push(0x3a);
-    move_code.push(0x00);
-
-    let jump_offset = move_code.len() as i32; // Bytes
-    let jump_offset_bytes = jump_offset.to_ne_bytes();
-
-    // Do not perform move if cell is zero.
-    // je    jump_offset
-    bytes.push(0x0f);
-    bytes.push(0x84);
-    bytes.push(jump_offset_bytes[0]);
-    bytes.push(jump_offset_bytes[1]);
-    bytes.push(jump_offset_bytes[2]);
-    bytes.push(jump_offset_bytes[3]);
-
-    bytes.extend(move_code);
+    bytes.push(0x41);
+    bytes.push(0xc6);
+    bytes.push(0x02);
+    bytes.push(0x00);
 }
 
 #[inline]
