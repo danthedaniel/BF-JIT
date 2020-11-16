@@ -40,6 +40,7 @@ impl Fucker {
                 ASTNode::Read => instrs.push(Instr::Read),
                 ASTNode::Set(n) => instrs.push(Instr::Set(n)),
                 ASTNode::Add(n) => instrs.push(Instr::Add(n)),
+                ASTNode::Sub(n) => instrs.push(Instr::Sub(n)),
                 ASTNode::Loop(vec) => {
                     let inner_loop = Self::compile(vec);
                     // Add 1 to the offset to account for the BeginLoop/EndLoop instr
@@ -109,16 +110,32 @@ impl Fucker {
                 self.memory[self.dp] = n;
             }
             Instr::Add(n) => {
-                let target_pos = self.dp as isize + n;
+                if self.memory[self.dp] != 0 {
+                    let target_pos = self.dp as isize + n;
 
-                if (target_pos < 0) || (target_pos as usize >= self.memory.len()) {
-                    eprintln!("Attempted to move data outside of the bounds of memory");
-                    return false;
+                    if (target_pos < 0) || (target_pos as usize >= self.memory.len()) {
+                        eprintln!("Attempted to move data outside of the bounds of memory");
+                        return false;
+                    }
+
+                    self.memory[target_pos as usize] =
+                        self.memory[target_pos as usize].wrapping_add(self.memory[self.dp]);
+                    self.memory[self.dp] = 0;
                 }
+            }
+            Instr::Sub(n) => {
+                if self.memory[self.dp] != 0 {
+                    let target_pos = self.dp as isize + n;
 
-                self.memory[target_pos as usize] =
-                    self.memory[target_pos as usize].wrapping_add(self.memory[self.dp]);
-                self.memory[self.dp] = 0;
+                    if (target_pos < 0) || (target_pos as usize >= self.memory.len()) {
+                        eprintln!("Attempted to move data outside of the bounds of memory");
+                        return false;
+                    }
+
+                    self.memory[target_pos as usize] =
+                        self.memory[target_pos as usize].wrapping_sub(self.memory[self.dp]);
+                    self.memory[self.dp] = 0;
+                }
             }
             Instr::BeginLoop(offset) => {
                 if current == 0 {
