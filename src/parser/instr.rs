@@ -16,9 +16,9 @@ pub enum Instr {
     /// Set a value for the current cell.
     Set(u8),
     /// Add the current cell to the cell n spaces away and set the current cell to 0.
-    Add(isize),
+    AddTo(isize),
     /// Subtract the current cell from the cell n spaces away and set the current cell to 0.
-    Sub(isize),
+    SubFrom(isize),
     /// If the current memory cell is 0, jump forward by the contained offset.
     BeginLoop(usize),
     /// If the current memory cell is not 0, jump backward by the contained offset.

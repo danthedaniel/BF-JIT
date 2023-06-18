@@ -39,8 +39,8 @@ impl Fucker {
                 ASTNode::Print => instrs.push(Instr::Print),
                 ASTNode::Read => instrs.push(Instr::Read),
                 ASTNode::Set(n) => instrs.push(Instr::Set(n)),
-                ASTNode::Add(n) => instrs.push(Instr::Add(n)),
-                ASTNode::Sub(n) => instrs.push(Instr::Sub(n)),
+                ASTNode::AddTo(n) => instrs.push(Instr::AddTo(n)),
+                ASTNode::SubFrom(n) => instrs.push(Instr::SubFrom(n)),
                 ASTNode::Loop(vec) => {
                     let inner_loop = Self::compile(vec);
                     // Add 1 to the offset to account for the BeginLoop/EndLoop instr
@@ -109,7 +109,7 @@ impl Fucker {
             Instr::Set(n) => {
                 self.memory[self.dp] = n;
             }
-            Instr::Add(n) => {
+            Instr::AddTo(n) => {
                 if self.memory[self.dp] != 0 {
                     let target_pos = self.dp as isize + n;
 
@@ -123,7 +123,7 @@ impl Fucker {
                     self.memory[self.dp] = 0;
                 }
             }
-            Instr::Sub(n) => {
+            Instr::SubFrom(n) => {
                 if self.memory[self.dp] != 0 {
                     let target_pos = self.dp as isize + n;
 

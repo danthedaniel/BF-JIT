@@ -18,9 +18,9 @@ pub enum ASTNode {
     /// Set a literal value in the current cell.
     Set(u8),
     /// Add the current cell to the cell n spaces away and set the current cell to 0.
-    Add(isize),
+    AddTo(isize),
     /// Subtract the current cell from the cell n spaces away and set the current cell to 0.
-    Sub(isize),
+    SubFrom(isize),
     /// Loop over the contained instructions while the current memory cell is
     /// not zero.
     Loop(VecDeque<ASTNode>),
@@ -68,9 +68,13 @@ impl AST {
                         continue;
                     }
 
-                    current_loop = Self::shallow_combine_nodes(&mut current_loop);
+                    current_loop = Self::combine_consecutive_nodes(&mut current_loop);
 
-                    Self::loop_equivalent(&current_loop).unwrap_or(ASTNode::Loop(current_loop))
+                    if let Some(node) = Self::simplify_loop(&current_loop) {
+                        node
+                    } else {
+                        ASTNode::Loop(current_loop)
+                    }
                 }
                 // All other characters are comments and will be ignored
                 _ => continue,
@@ -87,12 +91,12 @@ impl AST {
         }
 
         Ok(AST {
-            data: Self::shallow_combine_nodes(&mut output),
+            data: Self::combine_consecutive_nodes(&mut output),
         })
     }
 
     /// If a shorthand for the provided loop exists, return that.
-    fn loop_equivalent(input: &VecDeque<ASTNode>) -> Option<ASTNode> {
+    fn simplify_loop(input: &VecDeque<ASTNode>) -> Option<ASTNode> {
         // Zero loop
         if input.len() == 1 {
             match input[0] {
@@ -110,26 +114,26 @@ impl AST {
                     if *a == *b =>
                 {
                     let offset = -(*a as isize);
-                    return Some(ASTNode::Add(offset));
+                    return Some(ASTNode::AddTo(offset));
                 }
                 (ASTNode::Decr(1), ASTNode::Next(a), ASTNode::Incr(1), ASTNode::Prev(b))
                     if *a == *b =>
                 {
                     let offset = *a as isize;
-                    return Some(ASTNode::Add(offset));
+                    return Some(ASTNode::AddTo(offset));
                 }
                 // Sub
                 (ASTNode::Decr(1), ASTNode::Prev(a), ASTNode::Decr(1), ASTNode::Next(b))
                     if *a == *b =>
                 {
                     let offset = -(*a as isize);
-                    return Some(ASTNode::Sub(offset));
+                    return Some(ASTNode::SubFrom(offset));
                 }
                 (ASTNode::Decr(1), ASTNode::Next(a), ASTNode::Decr(1), ASTNode::Prev(b))
                     if *a == *b =>
                 {
                     let offset = *a as isize;
-                    return Some(ASTNode::Sub(offset));
+                    return Some(ASTNode::SubFrom(offset));
                 }
                 _ => return None,
             };
@@ -138,8 +142,8 @@ impl AST {
         None
     }
 
-    /// Convert runs of +, -, < and > into bulk operations.
-    fn shallow_combine_nodes(input: &mut VecDeque<ASTNode>) -> VecDeque<ASTNode> {
+    /// Convert runs of instructions into bulk operations.
+    fn combine_consecutive_nodes(input: &mut VecDeque<ASTNode>) -> VecDeque<ASTNode> {
         let mut output = VecDeque::new();
 
         while let Some(next_node) = input.pop_front() {
@@ -194,5 +198,47 @@ mod tests {
         let ast = AST::parse("+++++").unwrap();
         assert_eq!(ast.data.len(), 1);
         assert_eq!(ast.data[0], ASTNode::Incr(5));
+    }
+
+    #[test]
+    fn simplify_to_set() {
+        let ast = AST::parse("+[-]").unwrap();
+        assert_eq!(ast.data.len(), 2);
+        assert_eq!(ast.data[0], ASTNode::Incr(1));
+        assert_eq!(ast.data[1], ASTNode::Set(0));
+    }
+
+    #[test]
+    fn simplify_to_add() {
+        let ast = AST::parse("+[->+<]").unwrap();
+        assert_eq!(ast.data.len(), 2);
+        assert_eq!(ast.data[0], ASTNode::Incr(1));
+        assert_eq!(ast.data[1], ASTNode::AddTo(1));
+    }
+
+    #[test]
+    fn simplify_to_sub() {
+        let ast = AST::parse("+[->-<]").unwrap();
+        assert_eq!(ast.data.len(), 2);
+        assert_eq!(ast.data[0], ASTNode::Incr(1));
+        assert_eq!(ast.data[1], ASTNode::SubFrom(1));
+    }
+
+    #[test]
+    fn removes_leading_loops() {
+        let ast = AST::parse("[-]").unwrap();
+        assert_eq!(ast.data.len(), 0);
+    }
+
+    #[test]
+    fn parses_rot13() {
+        let ast = AST::parse(include_str!("../../test/programs/rot13.bf"));
+        assert!(ast.is_ok());
+    }
+
+    #[test]
+    fn parses_mandelbrot() {
+        let ast = AST::parse(include_str!("../../test/programs/mandelbrot.bf"));
+        assert!(ast.is_ok());
     }
 }

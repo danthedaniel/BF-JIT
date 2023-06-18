@@ -92,12 +92,13 @@ impl JITPromise {
     }
 }
 
+/// The global set of JITPromises for a program.
 #[derive(Debug, Clone)]
-struct PromisePool(Rc<RefCell<Vec<Option<JITPromise>>>>);
+struct PromiseSet(Rc<RefCell<Vec<Option<JITPromise>>>>);
 
-impl PromisePool {
+impl PromiseSet {
     pub fn new() -> Self {
-        PromisePool(Rc::new(RefCell::new(Vec::new())))
+        PromiseSet(Rc::new(RefCell::new(Vec::new())))
     }
 
     /// By either searching for an equivalent promise, or creating a new one,
@@ -133,7 +134,7 @@ impl PromisePool {
     }
 }
 
-impl Deref for PromisePool {
+impl Deref for PromiseSet {
     type Target = Rc<RefCell<Vec<Option<JITPromise>>>>;
 
     fn deref(&self) -> &Self::Target {
@@ -146,7 +147,7 @@ impl Deref for PromisePool {
 pub struct JITTarget {
     source: VecDeque<ASTNode>,
     bytes: Immutable<Vec<u8>>,
-    promises: PromisePool,
+    promises: PromiseSet,
 }
 
 impl JITTarget {
@@ -154,7 +155,7 @@ impl JITTarget {
     #[cfg(target_arch = "x86_64")]
     pub fn new(nodes: VecDeque<ASTNode>) -> Result<Self, String> {
         let mut bytes = Vec::new();
-        let promises = PromisePool::new();
+        let promises = PromiseSet::new();
 
         code_gen::wrapper(
             &mut bytes,
@@ -175,7 +176,7 @@ impl JITTarget {
     }
 
     #[cfg(target_arch = "x86_64")]
-    fn new_fragment(nodes: VecDeque<ASTNode>, promises: PromisePool) -> Self {
+    fn new_fragment(nodes: VecDeque<ASTNode>, promises: PromiseSet) -> Self {
         let mut bytes = Vec::new();
 
         code_gen::wrapper(
@@ -192,7 +193,7 @@ impl JITTarget {
 
     /// Compile a vector of ASTNodes into executable bytes.
     #[cfg(target_arch = "x86_64")]
-    fn shallow_compile(nodes: VecDeque<ASTNode>, promises: PromisePool) -> Vec<u8> {
+    fn shallow_compile(nodes: VecDeque<ASTNode>, promises: PromiseSet) -> Vec<u8> {
         let mut bytes = Vec::new();
 
         for node in nodes {
@@ -204,8 +205,8 @@ impl JITTarget {
                 ASTNode::Print => code_gen::print(&mut bytes, jit_functions::print),
                 ASTNode::Read => code_gen::read(&mut bytes, jit_functions::read),
                 ASTNode::Set(n) => code_gen::set(&mut bytes, n),
-                ASTNode::Add(n) => code_gen::add(&mut bytes, n),
-                ASTNode::Sub(n) => code_gen::sub(&mut bytes, n),
+                ASTNode::AddTo(n) => code_gen::add(&mut bytes, n),
+                ASTNode::SubFrom(n) => code_gen::sub(&mut bytes, n),
                 ASTNode::Loop(nodes) if nodes.len() < INLINE_THRESHOLD => {
                     bytes.extend(Self::compile_loop(nodes, promises.clone()))
                 }
@@ -218,7 +219,7 @@ impl JITTarget {
 
     /// Perform AOT compilation on a loop.
     #[cfg(target_arch = "x86_64")]
-    fn compile_loop(nodes: VecDeque<ASTNode>, promises: PromisePool) -> Vec<u8> {
+    fn compile_loop(nodes: VecDeque<ASTNode>, promises: PromiseSet) -> Vec<u8> {
         let mut bytes = Vec::new();
 
         code_gen::aot_loop(&mut bytes, Self::shallow_compile(nodes, promises));
@@ -228,7 +229,7 @@ impl JITTarget {
 
     /// Perform JIT compilation on a loop.
     #[cfg(target_arch = "x86_64")]
-    fn defer_loop(nodes: VecDeque<ASTNode>, mut promises: PromisePool) -> Vec<u8> {
+    fn defer_loop(nodes: VecDeque<ASTNode>, mut promises: PromiseSet) -> Vec<u8> {
         let mut bytes = Vec::new();
 
         code_gen::jit_loop(&mut bytes, promises.add(nodes));
