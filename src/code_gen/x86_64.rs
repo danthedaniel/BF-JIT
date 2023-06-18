@@ -2,6 +2,8 @@ use std::mem;
 
 use crate::runnable::JITPromiseID;
 
+pub const RET: u8 = 0xc3;
+
 /// Convert an expression to a native-endian order byte array after a type cast.
 macro_rules! to_ne_bytes {
     ($ptr:expr, $ptr_type:ty) => {{
@@ -77,7 +79,7 @@ pub fn wrapper(bytes: &mut Vec<u8>, content: Vec<u8>) {
     callee_restore_from_stack(bytes);
 
     // ret
-    bytes.push(0xc3);
+    bytes.push(RET);
 }
 
 #[inline]

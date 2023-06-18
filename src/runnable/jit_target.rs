@@ -52,17 +52,19 @@ fn make_executable(source: &[u8]) -> Immutable<Vec<u8>> {
     let mut data: Vec<u8>;
 
     unsafe {
-        let mut ptr: *mut libc::c_void = mem::MaybeUninit::uninit().assume_init();
+        let mut buffer = mem::MaybeUninit::<*mut libc::c_void>::uninit();
+        let buffer_ptr = buffer.as_mut_ptr();
 
-        libc::posix_memalign(&mut ptr, *PAGE_SIZE, size);
+        libc::posix_memalign(buffer_ptr, *PAGE_SIZE, size);
         libc::mprotect(
-            ptr,
+            *buffer_ptr,
             size,
             libc::PROT_EXEC | libc::PROT_READ | libc::PROT_WRITE,
         );
-        libc::memset(ptr, 0xc3, size); // for now, prepopulate with 'RET'
+        // for now, prepopulate with 'RET'
+        libc::memset(*buffer_ptr, code_gen::RET as i32, size);
 
-        data = Vec::from_raw_parts(ptr as *mut u8, source.len(), size);
+        data = Vec::from_raw_parts(buffer.assume_init() as *mut u8, source.len(), size);
     }
 
     for (index, &byte) in source.iter().enumerate() {
