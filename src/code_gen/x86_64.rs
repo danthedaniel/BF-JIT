@@ -258,13 +258,13 @@ pub fn read(bytes: &mut Vec<u8>, read_fn: extern "C" fn() -> u8) {
     bytes.push(0xff);
     bytes.push(0xd0);
 
+    fn_call_post(bytes);
+
     // Copy return value into current cell.
     // mov    BYTE PTR [r10],al
     bytes.push(0x41);
     bytes.push(0x88);
     bytes.push(0x02);
-
-    fn_call_post(bytes);
 }
 
 #[inline]
