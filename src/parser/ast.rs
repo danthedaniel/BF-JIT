@@ -202,10 +202,10 @@ mod tests {
 
     #[test]
     fn simplify_to_set() {
-        let ast = AST::parse("+[-]").unwrap();
+        let ast = AST::parse("+[-]+++").unwrap();
         assert_eq!(ast.data.len(), 2);
         assert_eq!(ast.data[0], ASTNode::Incr(1));
-        assert_eq!(ast.data[1], ASTNode::Set(0));
+        assert_eq!(ast.data[1], ASTNode::Set(3));
     }
 
     #[test]
@@ -232,7 +232,7 @@ mod tests {
 
     #[test]
     fn parses_rot13() {
-        let ast = AST::parse(include_str!("../../test/programs/rot13.bf"));
+        let ast = AST::parse(include_str!("../../test/programs/rot13-16char.bf"));
         assert!(ast.is_ok());
     }
 

@@ -10,6 +10,10 @@ pub trait Runnable {
 mod fucker;
 mod immutable;
 mod jit_target;
+#[cfg(test)]
+mod test_buffer;
+#[cfg(test)]
+pub use self::test_buffer::SharedBuffer;
 
 pub use self::fucker::Fucker;
 pub use self::jit_target::{JITPromiseID, JITTarget};

@@ -1,8 +1,6 @@
 use std::cmp;
 use std::collections::VecDeque;
-use std::io::Write;
-
-use libc::getchar;
+use std::io::{self, Read, Write};
 
 use super::Runnable;
 use crate::parser::{ASTNode, Instr};
@@ -12,9 +10,13 @@ pub struct Fucker {
     program: Vec<Instr>,
     memory: Vec<u8>,
     /// Program counter
-    pub pc: usize,
+    pc: usize,
     /// Data pointer
-    pub dp: usize,
+    dp: usize,
+    /// Reader used by brainfuck's , command
+    io_read: Box<dyn Read>,
+    /// Writer used by brainfuck's . command
+    io_write: Box<dyn Write>,
 }
 
 impl Fucker {
@@ -24,6 +26,8 @@ impl Fucker {
             memory: vec![0u8; 0x4000],
             pc: 0,
             dp: 0,
+            io_read: Box::new(io::stdin()),
+            io_write: Box::new(io::stdout()),
         }
     }
 
@@ -95,16 +99,23 @@ impl Fucker {
                 self.dp -= n;
             }
             Instr::Print => {
-                if let Err(msg) = std::io::stdout()
-                    .write(&[current])
-                    .and_then(|_size| std::io::stdout().flush())
-                {
+                if let Err(msg) = self.io_write.write_all(&[current]) {
                     eprintln!("{}", msg);
                     return false;
                 }
             }
             Instr::Read => {
-                self.memory[self.dp] = unsafe { getchar() as u8 };
+                let mut buf = [0u8; 1];
+                if let Err(error) = self.io_read.read_exact(&mut buf) {
+                    if error.kind() != io::ErrorKind::UnexpectedEof {
+                        eprintln!("{}", error);
+                        return false;
+                    }
+
+                    // Default to newlines if the input stream is empty.
+                    buf[0] = b'\n';
+                }
+                self.memory[self.dp] = buf[0];
             }
             Instr::Set(n) => {
                 self.memory[self.dp] = n;
@@ -176,11 +187,36 @@ impl Runnable for Fucker {
 mod tests {
     use super::*;
     use crate::parser::AST;
+    use crate::runnable::SharedBuffer;
+    use std::io::Cursor;
 
     #[test]
     fn run_hello_world() {
         let ast = AST::parse(include_str!("../../test/programs/hello_world.bf")).unwrap();
         let mut fucker = Fucker::new(ast.data);
+        let shared_buffer = SharedBuffer::new();
+        fucker.io_write = Box::new(shared_buffer.clone());
+
         fucker.run();
+
+        let output_string = shared_buffer.get_string_content();
+        assert_eq!(output_string, "Hello World!\n");
+    }
+
+    #[test]
+    fn run_rot13() {
+        // This rot13 program terminates after 16 characters so we can test it. Otherwise it would
+        // wait on input forever.
+        let ast = AST::parse(include_str!("../../test/programs/rot13-16char.bf")).unwrap();
+        let mut fucker = Fucker::new(ast.data);
+        let shared_buffer = SharedBuffer::new();
+        fucker.io_write = Box::new(shared_buffer.clone());
+        let in_cursor = Box::new(Cursor::new("Hello World! 123".as_bytes().to_vec()));
+        fucker.io_read = in_cursor;
+
+        fucker.run();
+
+        let output_string = shared_buffer.get_string_content();
+        assert_eq!(output_string, "Uryyb Jbeyq! 123");
     }
 }

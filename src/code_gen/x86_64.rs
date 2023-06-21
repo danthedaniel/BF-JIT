@@ -1,3 +1,4 @@
+use libc::c_void;
 use std::mem;
 
 use crate::runnable::JITPromiseID;
@@ -201,17 +202,23 @@ fn fn_call_post(bytes: &mut Vec<u8>) {
 }
 
 #[inline]
-pub fn print(bytes: &mut Vec<u8>, print_fn: extern "C" fn(u8) -> ()) {
-    let print_ptr_bytes = to_ne_bytes!(print_fn, extern "C" fn(u8) -> ());
+pub fn print(bytes: &mut Vec<u8>, print_fn: extern "C" fn(*mut c_void, u8) -> ()) {
+    let print_ptr_bytes = to_ne_bytes!(print_fn, extern "C" fn(*mut c_void, u8) -> ());
 
     fn_call_pre(bytes);
 
-    // Move the current memory cell into the first argument register
-    // movzx    rdi,BYTE PTR [r10]
+    // Move the JITTarget pointer into the first argument register
+    // mov    rdi,r11
+    bytes.push(0x4c);
+    bytes.push(0x89);
+    bytes.push(0xdf);
+
+    // Move the current memory cell into the second argument register
+    // movzx    rsi,BYTE PTR [r10]
     bytes.push(0x49);
     bytes.push(0x0f);
     bytes.push(0xb6);
-    bytes.push(0x3a);
+    bytes.push(0x32);
 
     // Copy function pointer for print() into rax
     // movabs rax,print_fn
@@ -235,10 +242,16 @@ pub fn print(bytes: &mut Vec<u8>, print_fn: extern "C" fn(u8) -> ()) {
 }
 
 #[inline]
-pub fn read(bytes: &mut Vec<u8>, read_fn: extern "C" fn() -> u8) {
-    let read_ptr_bytes = to_ne_bytes!(read_fn, extern "C" fn() -> u8);
+pub fn read(bytes: &mut Vec<u8>, read_fn: extern "C" fn(*mut c_void) -> u8) {
+    let read_ptr_bytes = to_ne_bytes!(read_fn, extern "C" fn(*mut c_void) -> u8);
 
     fn_call_pre(bytes);
+
+    // Move the JITTarget pointer into the first argument register
+    // mov    rdi,r11
+    bytes.push(0x4c);
+    bytes.push(0x89);
+    bytes.push(0xdf);
 
     // Copy function pointer for read() into rax
     // movabs rax,read_fn
