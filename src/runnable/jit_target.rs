@@ -1,3 +1,6 @@
+use crate::code_gen;
+use crate::parser::ASTNode;
+use crate::runnable::immutable::Immutable;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::fmt;
@@ -5,20 +8,14 @@ use std::io::{self, Read, Write};
 use std::mem;
 use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
-
-use crate::code_gen;
-use crate::parser::ASTNode;
-use crate::runnable::immutable::Immutable;
+use std::sync::OnceLock;
 
 use libc::{sysconf, _SC_PAGESIZE};
 
 use runnable::Runnable;
 
 const INLINE_THRESHOLD: usize = 0x16;
-
-lazy_static! {
-    static ref PAGE_SIZE: usize = unsafe { sysconf(_SC_PAGESIZE) as usize };
-}
+const PAGE_SIZE: OnceLock<usize> = OnceLock::new();
 
 /// Functions called by JIT-compiled code.
 mod jit_functions {
@@ -78,7 +75,7 @@ mod jit_functions {
 ///
 /// * `numerator` - The upper component of a division
 /// * `denominator` - The lower component of a division
-fn int_ceil(numerator: usize, denominator: usize) -> usize {
+fn int_div_ceil(numerator: usize, denominator: usize) -> usize {
     (numerator / denominator + 1) * denominator
 }
 
@@ -87,30 +84,35 @@ fn int_ceil(numerator: usize, denominator: usize) -> usize {
 /// The returned vector is immutable because re-allocation could result in lost
 /// memory protection settings.
 fn make_executable(source: &[u8]) -> Immutable<Vec<u8>> {
-    let size = int_ceil(source.len(), *PAGE_SIZE);
-    let mut data: Vec<u8>;
+    let mut executable: Vec<u8>;
 
-    unsafe {
+    {
         let mut buffer = mem::MaybeUninit::<*mut libc::c_void>::uninit();
         let buffer_ptr = buffer.as_mut_ptr();
 
-        libc::posix_memalign(buffer_ptr, *PAGE_SIZE, size);
-        libc::mprotect(
-            *buffer_ptr,
-            size,
-            libc::PROT_EXEC | libc::PROT_READ | libc::PROT_WRITE,
-        );
-        // for now, prepopulate with 'RET'
-        libc::memset(*buffer_ptr, code_gen::RET as i32, size);
+        let page_size = *PAGE_SIZE.get_or_init(|| unsafe { sysconf(_SC_PAGESIZE) as usize });
+        let buffer_size = int_div_ceil(source.len(), page_size);
 
-        data = Vec::from_raw_parts(buffer.assume_init() as *mut u8, source.len(), size);
+        unsafe {
+            libc::posix_memalign(buffer_ptr, page_size, buffer_size);
+            libc::mprotect(
+                *buffer_ptr,
+                buffer_size,
+                libc::PROT_EXEC | libc::PROT_WRITE | libc::PROT_READ,
+            );
+            // for now, prepopulate with 'RET'
+            libc::memset(*buffer_ptr, code_gen::RET as i32, buffer_size);
+
+            executable =
+                Vec::from_raw_parts(buffer.assume_init() as *mut u8, source.len(), buffer_size);
+        }
     }
 
     for (index, &byte) in source.iter().enumerate() {
-        data[index] = byte;
+        executable[index] = byte;
     }
 
-    Immutable::new(data)
+    Immutable::new(executable)
 }
 
 pub type JITPromiseID = usize;

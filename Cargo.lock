@@ -28,7 +28,6 @@ name = "fucker"
 version = "0.5.2"
 dependencies = [
  "docopt",
- "lazy_static",
  "libc",
  "serde",
  "serde_derive",

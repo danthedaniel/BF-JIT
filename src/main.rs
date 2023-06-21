@@ -4,9 +4,6 @@ extern crate libc;
 extern crate serde_derive;
 extern crate docopt;
 
-#[macro_use]
-extern crate lazy_static;
-
 mod code_gen;
 mod parser;
 mod runnable;
