@@ -20,7 +20,6 @@ fn int_div_ceil(numerator: usize, denominator: usize) -> usize {
 ///
 /// The returned vector is immutable because re-allocation could result in lost
 /// memory protection settings.
-#[cfg(target_arch = "x86_64")]
 pub fn make_executable(source: &[u8]) -> Immutable<Vec<u8>> {
     let mut executable: Vec<u8>;
 

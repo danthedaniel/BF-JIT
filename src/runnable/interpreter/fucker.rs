@@ -183,7 +183,6 @@ impl Runnable for Fucker {
     }
 }
 
-#[cfg(target_arch = "x86_64")]
 #[cfg(test)]
 mod tests {
     use super::super::super::test_buffer::SharedBuffer;
