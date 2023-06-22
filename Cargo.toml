@@ -1,6 +1,6 @@
 [package]
 name = "fucker"
-version = "0.5.2"
+version = "0.5.3"
 authors = ["teaearlgraycold <teaearlgraycold@protonmail.com>"]
 homepage = "https://github.com/danthedaniel/BrainFuck"
 repository = "https://github.com/danthedaniel/BrainFuck"
