@@ -9,6 +9,8 @@ pub trait Runnable {
 
 mod fucker;
 mod immutable;
+mod jit_helpers;
+mod jit_promise;
 mod jit_target;
 #[cfg(test)]
 mod test_buffer;
@@ -16,4 +18,5 @@ mod test_buffer;
 pub use self::test_buffer::SharedBuffer;
 
 pub use self::fucker::Fucker;
-pub use self::jit_target::{JITPromiseID, JITTarget};
+pub use self::jit_promise::{JITPromise, JITPromiseID, PromiseSet};
+pub use self::jit_target::{JITTarget, JITTargetVTable};

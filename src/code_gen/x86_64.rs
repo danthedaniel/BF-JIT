@@ -1,19 +1,7 @@
-use libc::c_void;
-use std::mem;
-
-use crate::runnable::JITPromiseID;
+use crate::runnable::{JITPromiseID, JITTargetVTable};
 
 pub const RET: u8 = 0xc3;
 
-/// Convert an expression to a native-endian order byte array after a type cast.
-macro_rules! to_ne_bytes {
-    ($ptr:expr, $ptr_type:ty) => {{
-        let bytes: [u8; mem::size_of::<$ptr_type>()] = unsafe { mem::transmute($ptr as $ptr_type) };
-        bytes
-    }};
-}
-
-#[inline]
 fn callee_save_to_stack(bytes: &mut Vec<u8>) {
     // push   rbx
     bytes.push(0x53);
@@ -47,7 +35,6 @@ fn callee_save_to_stack(bytes: &mut Vec<u8>) {
     bytes.push(0x57);
 }
 
-#[inline]
 pub fn wrapper(bytes: &mut Vec<u8>, content: Vec<u8>) {
     callee_save_to_stack(bytes);
 
@@ -63,7 +50,7 @@ pub fn wrapper(bytes: &mut Vec<u8>, content: Vec<u8>) {
     bytes.push(0x89);
     bytes.push(0xf3);
 
-    // Store pointer to JITTarget::jit_callback (third argument) in r12
+    // Store pointer to vtable (third argument) in r12
     // mov    r12,rdx
     bytes.push(0x49);
     bytes.push(0x89);
@@ -83,7 +70,6 @@ pub fn wrapper(bytes: &mut Vec<u8>, content: Vec<u8>) {
     bytes.push(RET);
 }
 
-#[inline]
 fn callee_restore_from_stack(bytes: &mut Vec<u8>) {
     // pop    r15
     bytes.push(0x41);
@@ -117,7 +103,6 @@ fn callee_restore_from_stack(bytes: &mut Vec<u8>) {
     bytes.push(0x5b);
 }
 
-#[inline]
 pub fn decr(bytes: &mut Vec<u8>, n: u8) {
     // sub    BYTE PTR [r10],n
     bytes.push(0x41);
@@ -126,7 +111,6 @@ pub fn decr(bytes: &mut Vec<u8>, n: u8) {
     bytes.push(n);
 }
 
-#[inline]
 pub fn incr(bytes: &mut Vec<u8>, n: u8) {
     // add    BYTE PTR [r10],n
     bytes.push(0x41);
@@ -135,7 +119,6 @@ pub fn incr(bytes: &mut Vec<u8>, n: u8) {
     bytes.push(n);
 }
 
-#[inline]
 pub fn next(bytes: &mut Vec<u8>, n: usize) {
     // HACK: Assumes usize won't be more than 32 bit...
     let n_bytes = (n as u32).to_ne_bytes();
@@ -150,7 +133,6 @@ pub fn next(bytes: &mut Vec<u8>, n: usize) {
     bytes.push(n_bytes[3]);
 }
 
-#[inline]
 pub fn prev(bytes: &mut Vec<u8>, n: usize) {
     // HACK: Assumes usize won't be more than 32 bit...
     let n_bytes = (n as u32).to_ne_bytes();
@@ -165,7 +147,6 @@ pub fn prev(bytes: &mut Vec<u8>, n: usize) {
     bytes.push(n_bytes[3]);
 }
 
-#[inline]
 fn fn_call_pre(bytes: &mut Vec<u8>) {
     // Push data pointer onto stack
     // push    r10
@@ -177,15 +158,14 @@ fn fn_call_pre(bytes: &mut Vec<u8>) {
     bytes.push(0x41);
     bytes.push(0x53);
 
-    // Push JIT function pointer onto stack
+    // Push vtable pointer onto stack
     // push   r12
     bytes.push(0x41);
     bytes.push(0x54);
 }
 
-#[inline]
 fn fn_call_post(bytes: &mut Vec<u8>) {
-    // Pop JIT function pointer from the stack
+    // Pop vtable pointer from the stack
     // pop    r12
     bytes.push(0x41);
     bytes.push(0x5c);
@@ -201,10 +181,18 @@ fn fn_call_post(bytes: &mut Vec<u8>) {
     bytes.push(0x5a);
 }
 
-#[inline]
-pub fn print(bytes: &mut Vec<u8>, print_fn: extern "C" fn(*mut c_void, u8) -> ()) {
-    let print_ptr_bytes = to_ne_bytes!(print_fn, extern "C" fn(*mut c_void, u8) -> ());
+/// Make a call to a vtable entry in r12 at index.
+fn call_vtable_index(bytes: &mut Vec<u8>, index: u8) {
+    // Load function pointer from vtable at index into rax
+    // call   QWORD PTR [r12+index]
+    bytes.push(0x41);
+    bytes.push(0xff);
+    bytes.push(0x54);
+    bytes.push(0x24);
+    bytes.push(index * 8);
+}
 
+pub fn print(bytes: &mut Vec<u8>) {
     fn_call_pre(bytes);
 
     // Move the JITTarget pointer into the first argument register
@@ -220,31 +208,12 @@ pub fn print(bytes: &mut Vec<u8>, print_fn: extern "C" fn(*mut c_void, u8) -> ()
     bytes.push(0xb6);
     bytes.push(0x32);
 
-    // Copy function pointer for print() into rax
-    // movabs rax,print_fn
-    bytes.push(0x48);
-    bytes.push(0xb8);
-    bytes.push(print_ptr_bytes[0]);
-    bytes.push(print_ptr_bytes[1]);
-    bytes.push(print_ptr_bytes[2]);
-    bytes.push(print_ptr_bytes[3]);
-    bytes.push(print_ptr_bytes[4]);
-    bytes.push(print_ptr_bytes[5]);
-    bytes.push(print_ptr_bytes[6]);
-    bytes.push(print_ptr_bytes[7]);
-
-    // Call print()
-    // call   rax
-    bytes.push(0xff);
-    bytes.push(0xd0);
+    call_vtable_index(bytes, JITTargetVTable::Print as u8);
 
     fn_call_post(bytes);
 }
 
-#[inline]
-pub fn read(bytes: &mut Vec<u8>, read_fn: extern "C" fn(*mut c_void) -> u8) {
-    let read_ptr_bytes = to_ne_bytes!(read_fn, extern "C" fn(*mut c_void) -> u8);
-
+pub fn read(bytes: &mut Vec<u8>) {
     fn_call_pre(bytes);
 
     // Move the JITTarget pointer into the first argument register
@@ -253,23 +222,7 @@ pub fn read(bytes: &mut Vec<u8>, read_fn: extern "C" fn(*mut c_void) -> u8) {
     bytes.push(0x89);
     bytes.push(0xdf);
 
-    // Copy function pointer for read() into rax
-    // movabs rax,read_fn
-    bytes.push(0x48);
-    bytes.push(0xb8);
-    bytes.push(read_ptr_bytes[0]);
-    bytes.push(read_ptr_bytes[1]);
-    bytes.push(read_ptr_bytes[2]);
-    bytes.push(read_ptr_bytes[3]);
-    bytes.push(read_ptr_bytes[4]);
-    bytes.push(read_ptr_bytes[5]);
-    bytes.push(read_ptr_bytes[6]);
-    bytes.push(read_ptr_bytes[7]);
-
-    // Call read()
-    // call   rax
-    bytes.push(0xff);
-    bytes.push(0xd0);
+    call_vtable_index(bytes, JITTargetVTable::Read as u8);
 
     fn_call_post(bytes);
 
@@ -280,7 +233,6 @@ pub fn read(bytes: &mut Vec<u8>, read_fn: extern "C" fn(*mut c_void) -> u8) {
     bytes.push(0x02);
 }
 
-#[inline]
 pub fn set(bytes: &mut Vec<u8>, value: u8) {
     // Set current memory cell to the value
     // mov    BYTE PTR [r10],value
@@ -290,7 +242,6 @@ pub fn set(bytes: &mut Vec<u8>, value: u8) {
     bytes.push(value);
 }
 
-#[inline]
 pub fn add(bytes: &mut Vec<u8>, offset: isize) {
     // Copy the current cell into EAX.
     // movzx  eax,BYTE PTR [r10]
@@ -329,7 +280,6 @@ pub fn add(bytes: &mut Vec<u8>, offset: isize) {
     bytes.push(0x00);
 }
 
-#[inline]
 pub fn sub(bytes: &mut Vec<u8>, offset: isize) {
     // Copy the current cell into EAX.
     // movzx  eax,BYTE PTR [r10]
@@ -368,7 +318,6 @@ pub fn sub(bytes: &mut Vec<u8>, offset: isize) {
     bytes.push(0x00);
 }
 
-#[inline]
 pub fn aot_loop(bytes: &mut Vec<u8>, inner_loop_bytes: Vec<u8>) {
     let inner_loop_size = inner_loop_bytes.len() as i32;
 
@@ -414,14 +363,13 @@ pub fn aot_loop(bytes: &mut Vec<u8>, inner_loop_bytes: Vec<u8>) {
     bytes.push(offset_bytes[3]);
 }
 
-#[inline]
 pub fn jit_loop(bytes: &mut Vec<u8>, loop_index: JITPromiseID) {
     // Push JITTarget pointer onto stack
     // push   r11
     bytes.push(0x41);
     bytes.push(0x53);
 
-    // Push JIT callback pointer onto stack
+    // Push vtable pointer onto stack
     // push   r12
     bytes.push(0x41);
     bytes.push(0x54);
@@ -453,11 +401,7 @@ pub fn jit_loop(bytes: &mut Vec<u8>, loop_index: JITPromiseID) {
     bytes.push(0x89);
     bytes.push(0xd2);
 
-    // Call JIT callback
-    // call   r12
-    bytes.push(0x41);
-    bytes.push(0xff);
-    bytes.push(0xd4);
+    call_vtable_index(bytes, JITTargetVTable::JITCallback as u8);
 
     // Take return value and store as the new data pointer
     // mov    r10,rax
@@ -465,7 +409,7 @@ pub fn jit_loop(bytes: &mut Vec<u8>, loop_index: JITPromiseID) {
     bytes.push(0x89);
     bytes.push(0xc2);
 
-    // Pop JIT function pointer from the stack
+    // Pop vtable pointer from the stack
     // pop    r12
     bytes.push(0x41);
     bytes.push(0x5c);

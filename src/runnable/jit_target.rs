@@ -1,205 +1,42 @@
 use crate::code_gen;
 use crate::parser::ASTNode;
 use crate::runnable::immutable::Immutable;
+use crate::runnable::{JITPromise, JITPromiseID, PromiseSet, Runnable};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::fmt;
 use std::io::{self, Read, Write};
 use std::mem;
-use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
-use std::sync::OnceLock;
 
-use libc::{sysconf, _SC_PAGESIZE};
-
-use runnable::Runnable;
+use runnable::jit_helpers::make_executable;
 
 const INLINE_THRESHOLD: usize = 0x16;
-const PAGE_SIZE: OnceLock<usize> = OnceLock::new();
 
-/// Functions called by JIT-compiled code.
-mod jit_functions {
-    use super::JITTarget;
-    use libc::c_void;
-    use std::io::{self, Read, Write};
-
-    /// Print a single byte
-    pub extern "C" fn print(jit_target: *mut c_void, byte: u8) {
-        let io_write = unsafe {
-            &mut jit_target
-                .cast::<JITTarget>()
-                .as_mut()
-                .expect("jit_target was NULL")
-                .context
-                .borrow_mut()
-                .io_write
-        };
-
-        let buffer = [byte];
-        let write_result = io_write.write_all(&buffer);
-
-        if let Err(error) = write_result {
-            panic!("Failed to write to stdout: {}", error);
-        }
-    }
-
-    /// Read a single byte
-    pub extern "C" fn read(jit_target: *mut c_void) -> u8 {
-        let io_read = unsafe {
-            &mut jit_target
-                .cast::<JITTarget>()
-                .as_mut()
-                .expect("jit_target was NULL")
-                .context
-                .borrow_mut()
-                .io_read
-        };
-
-        let mut buffer = [0];
-        let read_result = io_read.read_exact(&mut buffer);
-
-        if let Err(error) = read_result {
-            if error.kind() == io::ErrorKind::UnexpectedEof {
-                // Just send out newlines forever if the read stream has ended.
-                return b'\n';
-            }
-
-            panic!("Failed to read from stdin: {}", error);
-        }
-
-        buffer[0]
-    }
+/// Indexes into the vtable passed into JIT compiled code
+pub enum JITTargetVTable {
+    JITCallback = 0,
+    Read = 1,
+    Print = 2,
 }
 
-/// Round up an integer division.
-///
-/// * `numerator` - The upper component of a division
-/// * `denominator` - The lower component of a division
-fn int_div_ceil(numerator: usize, denominator: usize) -> usize {
-    (numerator / denominator + 1) * denominator
-}
-
-/// Clone a slice of bytes into new executable memory pages.
-///
-/// The returned vector is immutable because re-allocation could result in lost
-/// memory protection settings.
-fn make_executable(source: &[u8]) -> Immutable<Vec<u8>> {
-    let mut executable: Vec<u8>;
-
-    {
-        let mut buffer = mem::MaybeUninit::<*mut libc::c_void>::uninit();
-        let buffer_ptr = buffer.as_mut_ptr();
-
-        let page_size = *PAGE_SIZE.get_or_init(|| unsafe { sysconf(_SC_PAGESIZE) as usize });
-        let buffer_size = int_div_ceil(source.len(), page_size);
-
-        unsafe {
-            libc::posix_memalign(buffer_ptr, page_size, buffer_size);
-            libc::mprotect(
-                *buffer_ptr,
-                buffer_size,
-                libc::PROT_EXEC | libc::PROT_WRITE | libc::PROT_READ,
-            );
-            // for now, prepopulate with 'RET'
-            libc::memset(*buffer_ptr, code_gen::RET as i32, buffer_size);
-
-            executable =
-                Vec::from_raw_parts(buffer.assume_init() as *mut u8, source.len(), buffer_size);
-        }
-    }
-
-    for (index, &byte) in source.iter().enumerate() {
-        executable[index] = byte;
-    }
-
-    Immutable::new(executable)
-}
-
-pub type JITPromiseID = usize;
-
-/// Holds ASTNodes for later compilation.
-#[derive(Debug)]
-pub enum JITPromise {
-    Deferred(VecDeque<ASTNode>),
-    Compiled(JITTarget),
-}
-
-impl JITPromise {
-    pub fn source(&self) -> &VecDeque<ASTNode> {
-        match self {
-            JITPromise::Deferred(source) => source,
-            JITPromise::Compiled(JITTarget { source, .. }) => source,
-        }
-    }
-}
-
-/// The global set of JITPromises for a program.
-#[derive(Debug, Default)]
-struct PromiseSet(Vec<Option<JITPromise>>);
-
-impl PromiseSet {
-    /// By either searching for an equivalent promise, or creating a new one,
-    /// return a promise ID for a vector of ASTNodes.
-    pub fn add(&mut self, nodes: VecDeque<ASTNode>) -> JITPromiseID {
-        for (index, promise) in self.iter().enumerate() {
-            if let Some(promise) = promise {
-                if promise.source() == &nodes {
-                    return index;
-                }
-            }
-            // It's possible for `promise` to be None here. If the call stack
-            // look like:
-            //
-            // * PromisePool::add
-            // * JITTarget::defer_loop
-            // * JITTarget::shallow_compile
-            // * JITTarget::new_fragment
-            // * JITTarget::jit_callback
-            //
-            // then the JITPromise that was plucked from this PromisePool in
-            // JITTarget::jit_callback has not been placed back into the pool
-            // yet. This won't lead to duplicates and thus is not a problem
-            // since it is not possible for a loop to contain itself.
-            // (i.e. BrainFuck does not support recursion).
-        }
-
-        // If this is a new promise, add it to the pool.
-        self.push(Some(JITPromise::Deferred(nodes)));
-        return self.len() - 1;
-    }
-}
-
-impl Deref for PromiseSet {
-    type Target = Vec<Option<JITPromise>>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl DerefMut for PromiseSet {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-struct JITContext {
+pub struct JITContext {
     /// All non-root JITTargets in the program
     promises: PromiseSet,
     /// Reader that can be overridden to allow for input from a source other than stdin
-    io_read: Box<dyn Read>,
+    pub io_read: Box<dyn Read>,
     /// Writer that can be overriden to allow for output to a location other than stdout
-    io_write: Box<dyn Write>,
+    pub io_write: Box<dyn Write>,
 }
 
 /// Container for executable bytes.
 pub struct JITTarget {
     /// Original AST
-    source: VecDeque<ASTNode>,
+    pub source: VecDeque<ASTNode>,
     /// Executable bytes buffer
     bytes: Immutable<Vec<u8>>,
     /// Globals for the whole program
-    context: Rc<RefCell<JITContext>>,
+    pub context: Rc<RefCell<JITContext>>,
 }
 
 impl fmt::Debug for JITTarget {
@@ -268,8 +105,8 @@ impl JITTarget {
                 ASTNode::Decr(n) => code_gen::decr(&mut bytes, n),
                 ASTNode::Next(n) => code_gen::next(&mut bytes, n),
                 ASTNode::Prev(n) => code_gen::prev(&mut bytes, n),
-                ASTNode::Print => code_gen::print(&mut bytes, jit_functions::print),
-                ASTNode::Read => code_gen::read(&mut bytes, jit_functions::read),
+                ASTNode::Print => code_gen::print(&mut bytes),
+                ASTNode::Read => code_gen::read(&mut bytes),
                 ASTNode::Set(n) => code_gen::set(&mut bytes, n),
                 ASTNode::AddTo(n) => code_gen::add(&mut bytes, n),
                 ASTNode::SubFrom(n) => code_gen::sub(&mut bytes, n),
@@ -303,14 +140,51 @@ impl JITTarget {
         bytes
     }
 
+    /// Print a single byte (called by JIT compiled code)
+    extern "C" fn print(&mut self, byte: u8) {
+        let buffer = [byte];
+        let write_result = self.context.borrow_mut().io_write.write_all(&buffer);
+
+        if let Err(error) = write_result {
+            panic!("Failed to write to stdout: {}", error);
+        }
+    }
+
+    /// Read a single byte (called by JIT compiled code)
+    extern "C" fn read(&mut self) -> u8 {
+        let mut buffer = [0];
+        let read_result = self.context.borrow_mut().io_read.read_exact(&mut buffer);
+
+        if let Err(error) = read_result {
+            if error.kind() == io::ErrorKind::UnexpectedEof {
+                // Just send out newlines forever if the read stream has ended.
+                return b'\n';
+            }
+
+            panic!("Failed to read from stdin: {}", error);
+        }
+
+        buffer[0]
+    }
+
     /// Execute the bytes buffer as a function.
     #[cfg(target_arch = "x86_64")]
     fn exec(&mut self, mem_ptr: *mut u8) -> *mut u8 {
-        type JITCallbackType = extern "C" fn(&mut JITTarget, JITPromiseID, *mut u8) -> *mut u8;
-        let func: fn(*mut u8, &mut JITTarget, JITCallbackType) -> *mut u8 =
+        // We just need a type to unify all function pointers behind. Because
+        // the vtable is not used in the Rust code at all, the type is not
+        // important.
+        type VoidPtr = *mut ();
+
+        let func: fn(*mut u8, &mut JITTarget, &[VoidPtr]) -> *mut u8 =
             unsafe { mem::transmute(self.bytes.as_ptr()) };
 
-        func(mem_ptr, self, Self::jit_callback)
+        let vtable = &[
+            Self::jit_callback as VoidPtr,
+            Self::read as VoidPtr,
+            Self::print as VoidPtr,
+        ];
+
+        func(mem_ptr, self, vtable)
     }
 
     /// Callback passed into compiled code. Allows for deferred compilation
