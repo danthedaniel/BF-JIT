@@ -1,4 +1,5 @@
-use crate::runnable::{JITPromiseID, JITTargetVTable};
+use super::super::jit_promise::JITPromiseID;
+use super::super::jit_target::JITTargetVTable;
 
 pub const RET: u8 = 0xc3;
 

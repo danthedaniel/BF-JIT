@@ -2,8 +2,9 @@ use std::cmp;
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 
-use super::Runnable;
-use crate::parser::{ASTNode, Instr};
+use super::super::Runnable;
+use super::instr::Instr;
+use crate::parser::ASTNode;
 
 /// BrainFuck virtual machine
 pub struct Fucker {
@@ -185,14 +186,14 @@ impl Runnable for Fucker {
 #[cfg(target_arch = "x86_64")]
 #[cfg(test)]
 mod tests {
+    use super::super::super::test_buffer::SharedBuffer;
     use super::*;
     use crate::parser::AST;
-    use crate::runnable::SharedBuffer;
     use std::io::Cursor;
 
     #[test]
     fn run_hello_world() {
-        let ast = AST::parse(include_str!("../../test/programs/hello_world.bf")).unwrap();
+        let ast = AST::parse(include_str!("../../../test/programs/hello_world.bf")).unwrap();
         let mut fucker = Fucker::new(ast.data);
         let shared_buffer = SharedBuffer::new();
         fucker.io_write = Box::new(shared_buffer.clone());
@@ -207,7 +208,7 @@ mod tests {
     fn run_rot13() {
         // This rot13 program terminates after 16 characters so we can test it. Otherwise it would
         // wait on input forever.
-        let ast = AST::parse(include_str!("../../test/programs/rot13-16char.bf")).unwrap();
+        let ast = AST::parse(include_str!("../../../test/programs/rot13-16char.bf")).unwrap();
         let mut fucker = Fucker::new(ast.data);
         let shared_buffer = SharedBuffer::new();
         fucker.io_write = Box::new(shared_buffer.clone());

@@ -4,7 +4,6 @@ extern crate libc;
 extern crate serde_derive;
 extern crate docopt;
 
-mod code_gen;
 mod parser;
 mod runnable;
 
@@ -15,7 +14,10 @@ use std::process::exit;
 use docopt::Docopt;
 
 use parser::AST;
-use runnable::{Fucker, JITTarget, Runnable};
+use runnable::interpreter::Fucker;
+#[cfg(target_arch = "x86_64")]
+use runnable::jit::JITTarget;
+use runnable::Runnable;
 
 const USAGE: &str = "
 Fucker
@@ -59,13 +61,13 @@ fn main() {
     let mut runnable: Box<dyn Runnable> = if args.flag_int {
         Box::new(Fucker::new(program.data))
     } else {
-        match JITTarget::new(program.data) {
-            Ok(jit_target) => Box::new(jit_target),
-            Err(msg) => {
-                eprintln!("Error occurred while JIT compiling program: {}", msg);
-                return;
-            }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            eprintln!("JIT is not supported for this architecture");
+            exit(1);
         }
+        #[cfg(target_arch = "x86_64")]
+        Box::new(JITTarget::new(program.data))
     };
 
     runnable.run();

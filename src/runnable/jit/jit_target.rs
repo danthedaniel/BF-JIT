@@ -1,7 +1,8 @@
-use crate::code_gen;
+use super::super::Runnable;
+use super::code_gen;
+use super::immutable::Immutable;
+use super::jit_promise::{JITPromise, JITPromiseID, PromiseSet};
 use crate::parser::ASTNode;
-use crate::runnable::immutable::Immutable;
-use crate::runnable::{JITPromise, JITPromiseID, PromiseSet, Runnable};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::fmt;
@@ -9,7 +10,7 @@ use std::io::{self, Read, Write};
 use std::mem;
 use std::rc::Rc;
 
-use runnable::jit_helpers::make_executable;
+use super::jit_helpers::make_executable;
 
 const INLINE_THRESHOLD: usize = 0x16;
 
@@ -51,8 +52,7 @@ impl fmt::Debug for JITTarget {
 
 impl JITTarget {
     /// Initialize a JIT compiled version of a program.
-    #[cfg(target_arch = "x86_64")]
-    pub fn new(nodes: VecDeque<ASTNode>) -> Result<Self, String> {
+    pub fn new(nodes: VecDeque<ASTNode>) -> Self {
         let mut bytes = Vec::new();
         let context = Rc::new(RefCell::new(JITContext {
             promises: PromiseSet::default(),
@@ -65,20 +65,13 @@ impl JITTarget {
             Self::shallow_compile(nodes.clone(), context.clone()),
         );
 
-        Ok(Self {
+        Self {
             source: nodes,
             bytes: make_executable(&bytes),
             context: context.clone(),
-        })
+        }
     }
 
-    /// No-op version for unsupported architectures.
-    #[cfg(not(target_arch = "x86_64"))]
-    pub fn new(nodes: VecDeque<ASTNode>) -> Result<Self, String> {
-        Err(format!("Unsupported JIT architecture."))
-    }
-
-    #[cfg(target_arch = "x86_64")]
     fn new_fragment(context: Rc<RefCell<JITContext>>, nodes: VecDeque<ASTNode>) -> Self {
         let mut bytes = Vec::new();
 
@@ -95,7 +88,6 @@ impl JITTarget {
     }
 
     /// Compile a vector of ASTNodes into executable bytes.
-    #[cfg(target_arch = "x86_64")]
     fn shallow_compile(nodes: VecDeque<ASTNode>, context: Rc<RefCell<JITContext>>) -> Vec<u8> {
         let mut bytes = Vec::new();
 
@@ -121,7 +113,6 @@ impl JITTarget {
     }
 
     /// Perform AOT compilation on a loop.
-    #[cfg(target_arch = "x86_64")]
     fn compile_loop(nodes: VecDeque<ASTNode>, context: Rc<RefCell<JITContext>>) -> Vec<u8> {
         let mut bytes = Vec::new();
 
@@ -131,13 +122,38 @@ impl JITTarget {
     }
 
     /// Perform JIT compilation on a loop.
-    #[cfg(target_arch = "x86_64")]
     fn defer_loop(nodes: VecDeque<ASTNode>, context: Rc<RefCell<JITContext>>) -> Vec<u8> {
         let mut bytes = Vec::new();
 
         code_gen::jit_loop(&mut bytes, context.borrow_mut().promises.add(nodes));
 
         bytes
+    }
+
+    /// Callback passed into compiled code. Allows for deferred compilation
+    /// targets to be compiled, ran, and later re-ran.
+    extern "C" fn jit_callback(&mut self, promise_id: JITPromiseID, mem_ptr: *mut u8) -> *mut u8 {
+        let mut promise = self.context.borrow_mut().promises[promise_id]
+            .take()
+            .expect("Someone forgot to put a promise back");
+        let return_ptr;
+        let new_promise;
+
+        match promise {
+            JITPromise::Deferred(nodes) => {
+                let mut new_target = Self::new_fragment(self.context.clone(), nodes);
+                return_ptr = new_target.exec(mem_ptr);
+                new_promise = Some(JITPromise::Compiled(new_target));
+            }
+            JITPromise::Compiled(ref mut jit_target) => {
+                return_ptr = jit_target.exec(mem_ptr);
+                new_promise = Some(promise);
+            }
+        };
+
+        self.context.borrow_mut().promises[promise_id] = new_promise;
+
+        return_ptr
     }
 
     /// Print a single byte (called by JIT compiled code)
@@ -168,7 +184,6 @@ impl JITTarget {
     }
 
     /// Execute the bytes buffer as a function.
-    #[cfg(target_arch = "x86_64")]
     fn exec(&mut self, mem_ptr: *mut u8) -> *mut u8 {
         // We just need a type to unify all function pointers behind. Because
         // the vtable is not used in the Rust code at all, the type is not
@@ -186,60 +201,28 @@ impl JITTarget {
 
         func(mem_ptr, self, vtable)
     }
-
-    /// Callback passed into compiled code. Allows for deferred compilation
-    /// targets to be compiled, ran, and later re-ran.
-    #[cfg(target_arch = "x86_64")]
-    extern "C" fn jit_callback(&mut self, promise_id: JITPromiseID, mem_ptr: *mut u8) -> *mut u8 {
-        let mut promise = self.context.borrow_mut().promises[promise_id]
-            .take()
-            .expect("Someone forgot to put a promise back");
-        let return_ptr;
-        let new_promise;
-
-        match promise {
-            JITPromise::Deferred(nodes) => {
-                let mut new_target = Self::new_fragment(self.context.clone(), nodes);
-                return_ptr = new_target.exec(mem_ptr);
-                new_promise = Some(JITPromise::Compiled(new_target));
-            }
-            JITPromise::Compiled(ref mut jit_target) => {
-                return_ptr = jit_target.exec(mem_ptr);
-                new_promise = Some(promise);
-            }
-        };
-
-        self.context.borrow_mut().promises[promise_id] = new_promise;
-
-        return_ptr
-    }
 }
 
 impl Runnable for JITTarget {
-    #[cfg(target_arch = "x86_64")]
     fn run(&mut self) {
         let mut bf_mem = vec![0u8; 30_000]; // Memory space used by BrainFuck
         let mem_ptr = bf_mem.as_mut_ptr();
 
         self.exec(mem_ptr);
     }
-
-    #[cfg(not(target_arch = "x86_64"))]
-    fn run(&mut self) {}
 }
 
-#[cfg(target_arch = "x86_64")]
 #[cfg(test)]
 mod tests {
+    use super::super::super::test_buffer::SharedBuffer;
     use super::*;
     use crate::parser::AST;
-    use crate::runnable::SharedBuffer;
     use std::io::Cursor;
 
     #[test]
     fn run_hello_world() {
-        let ast = AST::parse(include_str!("../../test/programs/hello_world.bf")).unwrap();
-        let mut jit_target = JITTarget::new(ast.data).unwrap();
+        let ast = AST::parse(include_str!("../../../test/programs/hello_world.bf")).unwrap();
+        let mut jit_target = JITTarget::new(ast.data);
         let shared_buffer = SharedBuffer::new();
         jit_target.context.borrow_mut().io_write = Box::new(shared_buffer.clone());
 
@@ -251,15 +234,15 @@ mod tests {
 
     #[test]
     fn run_mandelbrot() {
-        let ast = AST::parse(include_str!("../../test/programs/mandelbrot.bf")).unwrap();
-        let mut jit_target = JITTarget::new(ast.data).unwrap();
+        let ast = AST::parse(include_str!("../../../test/programs/mandelbrot.bf")).unwrap();
+        let mut jit_target = JITTarget::new(ast.data);
         let shared_buffer = SharedBuffer::new();
         jit_target.context.borrow_mut().io_write = Box::new(shared_buffer.clone());
 
         jit_target.run();
 
         let output_string = shared_buffer.get_string_content();
-        let expected_output = include_str!("../../test/programs/mandelbrot.out");
+        let expected_output = include_str!("../../../test/programs/mandelbrot.out");
         assert_eq!(output_string, expected_output);
     }
 
@@ -267,8 +250,8 @@ mod tests {
     fn run_rot13() {
         // This rot13 program terminates after 16 characters so we can test it. Otherwise it would
         // wait on input forever.
-        let ast = AST::parse(include_str!("../../test/programs/rot13-16char.bf")).unwrap();
-        let mut jit_target = JITTarget::new(ast.data).unwrap();
+        let ast = AST::parse(include_str!("../../../test/programs/rot13-16char.bf")).unwrap();
+        let mut jit_target = JITTarget::new(ast.data);
         let shared_buffer = SharedBuffer::new();
         jit_target.context.borrow_mut().io_write = Box::new(shared_buffer.clone());
         let in_cursor = Box::new(Cursor::new("Hello World! 123".as_bytes().to_vec()));
