@@ -182,15 +182,15 @@ fn fn_call_post(bytes: &mut Vec<u8>) {
     bytes.push(0x5a);
 }
 
-/// Make a call to a vtable entry in r12 at index.
-fn call_vtable_index(bytes: &mut Vec<u8>, index: u8) {
+/// Make a call to a vtable entry in r12.
+fn call_vtable_entry(bytes: &mut Vec<u8>, entry: JITTargetVTable) {
     // Load function pointer from vtable at index into rax
     // call   QWORD PTR [r12+index]
     bytes.push(0x41);
     bytes.push(0xff);
     bytes.push(0x54);
     bytes.push(0x24);
-    bytes.push(index * 8);
+    bytes.push((entry as u8) * 8);
 }
 
 pub fn print(bytes: &mut Vec<u8>) {
@@ -209,7 +209,7 @@ pub fn print(bytes: &mut Vec<u8>) {
     bytes.push(0xb6);
     bytes.push(0x32);
 
-    call_vtable_index(bytes, JITTargetVTable::Print as u8);
+    call_vtable_entry(bytes, JITTargetVTable::Print);
 
     fn_call_post(bytes);
 }
@@ -223,7 +223,7 @@ pub fn read(bytes: &mut Vec<u8>) {
     bytes.push(0x89);
     bytes.push(0xdf);
 
-    call_vtable_index(bytes, JITTargetVTable::Read as u8);
+    call_vtable_entry(bytes, JITTargetVTable::Read);
 
     fn_call_post(bytes);
 
@@ -402,7 +402,7 @@ pub fn jit_loop(bytes: &mut Vec<u8>, loop_index: JITPromiseID) {
     bytes.push(0x89);
     bytes.push(0xd2);
 
-    call_vtable_index(bytes, JITTargetVTable::JITCallback as u8);
+    call_vtable_entry(bytes, JITTargetVTable::JITCallback);
 
     // Take return value and store as the new data pointer
     // mov    r10,rax
