@@ -2,8 +2,8 @@
 name = "fucker"
 version = "0.5.3"
 authors = ["teaearlgraycold <teaearlgraycold@protonmail.com>"]
-homepage = "https://github.com/danthedaniel/BrainFuck"
-repository = "https://github.com/danthedaniel/BrainFuck"
+homepage = "https://github.com/danthedaniel/BF-JIT"
+repository = "https://github.com/danthedaniel/BF-JIT"
 description = "BrainFuck interpreter and optimizing JIT compiler "
 readme = "README.md"
 license = "MIT"
