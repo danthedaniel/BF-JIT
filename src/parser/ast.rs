@@ -154,23 +154,24 @@ impl AST {
             // of adding another identical instruction.
             let combined = match (prev_node, &next_node) {
                 // Combine sequential Incr, Decr, Next and Prev
-                (Some(ASTNode::Incr(b)), ASTNode::Incr(a)) => ASTNode::Incr(a.wrapping_add(*b)),
-                (Some(ASTNode::Decr(b)), ASTNode::Decr(a)) => ASTNode::Decr(a.wrapping_add(*b)),
-                (Some(ASTNode::Next(b)), ASTNode::Next(a)) => ASTNode::Next(a.wrapping_add(*b)),
-                (Some(ASTNode::Prev(b)), ASTNode::Prev(a)) => ASTNode::Prev(a.wrapping_add(*b)),
+                (Some(ASTNode::Incr(b)), ASTNode::Incr(a)) => Some(ASTNode::Incr(a.wrapping_add(*b))),
+                (Some(ASTNode::Decr(b)), ASTNode::Decr(a)) => Some(ASTNode::Decr(a.wrapping_add(*b))),
+                (Some(ASTNode::Next(b)), ASTNode::Next(a)) => Some(ASTNode::Next(a.wrapping_add(*b))),
+                (Some(ASTNode::Prev(b)), ASTNode::Prev(a)) => Some(ASTNode::Prev(a.wrapping_add(*b))),
                 // Combine Incr or Decr with Set
-                (Some(ASTNode::Set(a)), ASTNode::Incr(b)) => ASTNode::Set(a.wrapping_add(*b)),
-                (Some(ASTNode::Set(a)), ASTNode::Decr(b)) => ASTNode::Set(a.wrapping_sub(*b)),
-                _ => {
-                    // Node is not combineable, just move into the output vector
-                    output.push_back(next_node);
-                    continue;
-                }
+                (Some(ASTNode::Set(a)), ASTNode::Incr(b)) => Some(ASTNode::Set(a.wrapping_add(*b))),
+                (Some(ASTNode::Set(a)), ASTNode::Decr(b)) => Some(ASTNode::Set(a.wrapping_sub(*b))),
+                // Node is not combinable
+                _ => None,
             };
 
-            // Replace last node with the combined one
-            output.pop_back();
-            output.push_back(combined);
+            if let Some(new_node) = combined {
+                // Replace last node with the combined one
+                output.pop_back();
+                output.push_back(new_node);
+            } else {
+                output.push_back(next_node);
+            }
         }
 
         output
