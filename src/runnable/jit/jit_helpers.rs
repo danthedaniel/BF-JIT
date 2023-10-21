@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 
 use libc::{sysconf, _SC_PAGESIZE};
 
-const PAGE_SIZE: OnceLock<usize> = OnceLock::new();
+static PAGE_SIZE: OnceLock<usize> = OnceLock::new();
 
 /// Round up an integer division.
 ///

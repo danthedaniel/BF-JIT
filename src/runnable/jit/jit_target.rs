@@ -2,7 +2,7 @@ use super::super::Runnable;
 use super::code_gen;
 use super::immutable::Immutable;
 use super::jit_promise::{JITPromise, JITPromiseID, PromiseSet};
-use crate::parser::ASTNode;
+use crate::parser::AstNode;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::fmt;
@@ -33,7 +33,7 @@ pub struct JITContext {
 /// Container for executable bytes.
 pub struct JITTarget {
     /// Original AST
-    pub source: VecDeque<ASTNode>,
+    pub source: VecDeque<AstNode>,
     /// Executable bytes buffer
     bytes: Immutable<Vec<u8>>,
     /// Globals for the whole program
@@ -52,7 +52,7 @@ impl fmt::Debug for JITTarget {
 
 impl JITTarget {
     /// Initialize a JIT compiled version of a program.
-    pub fn new(nodes: VecDeque<ASTNode>) -> Self {
+    pub fn new(nodes: VecDeque<AstNode>) -> Self {
         let mut bytes = Vec::new();
         let context = Rc::new(RefCell::new(JITContext {
             promises: PromiseSet::default(),
@@ -68,11 +68,11 @@ impl JITTarget {
         Self {
             source: nodes,
             bytes: make_executable(&bytes),
-            context: context.clone(),
+            context,
         }
     }
 
-    fn new_fragment(context: Rc<RefCell<JITContext>>, nodes: VecDeque<ASTNode>) -> Self {
+    fn new_fragment(context: Rc<RefCell<JITContext>>, nodes: VecDeque<AstNode>) -> Self {
         let mut bytes = Vec::new();
 
         code_gen::wrapper(
@@ -83,29 +83,29 @@ impl JITTarget {
         Self {
             source: nodes,
             bytes: make_executable(&bytes),
-            context: context.clone(),
+            context,
         }
     }
 
-    /// Compile a vector of ASTNodes into executable bytes.
-    fn shallow_compile(nodes: VecDeque<ASTNode>, context: Rc<RefCell<JITContext>>) -> Vec<u8> {
+    /// Compile a vector of AstNodes into executable bytes.
+    fn shallow_compile(nodes: VecDeque<AstNode>, context: Rc<RefCell<JITContext>>) -> Vec<u8> {
         let mut bytes = Vec::new();
 
         for node in nodes {
             match node {
-                ASTNode::Incr(n) => code_gen::incr(&mut bytes, n),
-                ASTNode::Decr(n) => code_gen::decr(&mut bytes, n),
-                ASTNode::Next(n) => code_gen::next(&mut bytes, n),
-                ASTNode::Prev(n) => code_gen::prev(&mut bytes, n),
-                ASTNode::Print => code_gen::print(&mut bytes),
-                ASTNode::Read => code_gen::read(&mut bytes),
-                ASTNode::Set(n) => code_gen::set(&mut bytes, n),
-                ASTNode::AddTo(n) => code_gen::add(&mut bytes, n),
-                ASTNode::SubFrom(n) => code_gen::sub(&mut bytes, n),
-                ASTNode::Loop(nodes) if nodes.len() < INLINE_THRESHOLD => {
+                AstNode::Incr(n) => code_gen::incr(&mut bytes, n),
+                AstNode::Decr(n) => code_gen::decr(&mut bytes, n),
+                AstNode::Next(n) => code_gen::next(&mut bytes, n),
+                AstNode::Prev(n) => code_gen::prev(&mut bytes, n),
+                AstNode::Print => code_gen::print(&mut bytes),
+                AstNode::Read => code_gen::read(&mut bytes),
+                AstNode::Set(n) => code_gen::set(&mut bytes, n),
+                AstNode::AddTo(n) => code_gen::add(&mut bytes, n),
+                AstNode::SubFrom(n) => code_gen::sub(&mut bytes, n),
+                AstNode::Loop(nodes) if nodes.len() < INLINE_THRESHOLD => {
                     bytes.extend(Self::compile_loop(nodes, context.clone()))
                 }
-                ASTNode::Loop(nodes) => bytes.extend(Self::defer_loop(nodes, context.clone())),
+                AstNode::Loop(nodes) => bytes.extend(Self::defer_loop(nodes, context.clone())),
             };
         }
 
@@ -113,7 +113,7 @@ impl JITTarget {
     }
 
     /// Perform AOT compilation on a loop.
-    fn compile_loop(nodes: VecDeque<ASTNode>, context: Rc<RefCell<JITContext>>) -> Vec<u8> {
+    fn compile_loop(nodes: VecDeque<AstNode>, context: Rc<RefCell<JITContext>>) -> Vec<u8> {
         let mut bytes = Vec::new();
 
         code_gen::aot_loop(&mut bytes, Self::shallow_compile(nodes, context));
@@ -122,7 +122,7 @@ impl JITTarget {
     }
 
     /// Perform JIT compilation on a loop.
-    fn defer_loop(nodes: VecDeque<ASTNode>, context: Rc<RefCell<JITContext>>) -> Vec<u8> {
+    fn defer_loop(nodes: VecDeque<AstNode>, context: Rc<RefCell<JITContext>>) -> Vec<u8> {
         let mut bytes = Vec::new();
 
         code_gen::jit_loop(&mut bytes, context.borrow_mut().promises.add(nodes));
@@ -216,12 +216,12 @@ impl Runnable for JITTarget {
 mod tests {
     use super::super::super::test_buffer::SharedBuffer;
     use super::*;
-    use crate::parser::AST;
+    use crate::parser::Ast;
     use std::io::Cursor;
 
     #[test]
     fn run_hello_world() {
-        let ast = AST::parse(include_str!("../../../test/programs/hello_world.bf")).unwrap();
+        let ast = Ast::parse(include_str!("../../../test/programs/hello_world.bf")).unwrap();
         let mut jit_target = JITTarget::new(ast.data);
         let shared_buffer = SharedBuffer::new();
         jit_target.context.borrow_mut().io_write = Box::new(shared_buffer.clone());
@@ -234,7 +234,7 @@ mod tests {
 
     #[test]
     fn run_mandelbrot() {
-        let ast = AST::parse(include_str!("../../../test/programs/mandelbrot.bf")).unwrap();
+        let ast = Ast::parse(include_str!("../../../test/programs/mandelbrot.bf")).unwrap();
         let mut jit_target = JITTarget::new(ast.data);
         let shared_buffer = SharedBuffer::new();
         jit_target.context.borrow_mut().io_write = Box::new(shared_buffer.clone());
@@ -250,7 +250,7 @@ mod tests {
     fn run_rot13() {
         // This rot13 program terminates after 16 characters so we can test it. Otherwise it would
         // wait on input forever.
-        let ast = AST::parse(include_str!("../../../test/programs/rot13-16char.bf")).unwrap();
+        let ast = Ast::parse(include_str!("../../../test/programs/rot13-16char.bf")).unwrap();
         let mut jit_target = JITTarget::new(ast.data);
         let shared_buffer = SharedBuffer::new();
         jit_target.context.borrow_mut().io_write = Box::new(shared_buffer.clone());

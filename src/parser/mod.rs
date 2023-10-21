@@ -1,3 +1,3 @@
 mod ast;
 
-pub use self::ast::{ASTNode, AST};
+pub use self::ast::{AstNode, Ast};

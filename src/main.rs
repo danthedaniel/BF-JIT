@@ -13,7 +13,7 @@ use std::process::exit;
 
 use docopt::Docopt;
 
-use parser::AST;
+use parser::Ast;
 use runnable::interpreter::Fucker;
 #[cfg(target_arch = "x86_64")]
 use runnable::jit::JITTarget;
@@ -46,7 +46,7 @@ fn main() {
         .unwrap_or_else(|e| e.exit());
 
     let program = read_program(&args.arg_program)
-        .and_then(|source| AST::parse(&source))
+        .and_then(|source| Ast::parse(&source))
         .unwrap_or_else(|e| {
             eprintln!("Error occurred while loading program: {}", e);
             exit(1)

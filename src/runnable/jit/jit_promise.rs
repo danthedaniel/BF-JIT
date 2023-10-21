@@ -3,21 +3,21 @@ use std::{
     ops::{Deref, DerefMut},
 };
 
-use crate::parser::ASTNode;
+use crate::parser::AstNode;
 
 use super::JITTarget;
 
 pub type JITPromiseID = usize;
 
-/// Holds ASTNodes for later compilation.
+/// Holds AstNodes for later compilation.
 #[derive(Debug)]
 pub enum JITPromise {
-    Deferred(VecDeque<ASTNode>),
+    Deferred(VecDeque<AstNode>),
     Compiled(JITTarget),
 }
 
 impl JITPromise {
-    pub fn source(&self) -> &VecDeque<ASTNode> {
+    pub fn source(&self) -> &VecDeque<AstNode> {
         match self {
             JITPromise::Deferred(source) => source,
             JITPromise::Compiled(JITTarget { source, .. }) => source,
@@ -31,8 +31,8 @@ pub struct PromiseSet(Vec<Option<JITPromise>>);
 
 impl PromiseSet {
     /// By either searching for an equivalent promise, or creating a new one,
-    /// return a promise ID for a vector of ASTNodes.
-    pub fn add(&mut self, nodes: VecDeque<ASTNode>) -> JITPromiseID {
+    /// return a promise ID for a vector of AstNodes.
+    pub fn add(&mut self, nodes: VecDeque<AstNode>) -> JITPromiseID {
         for (index, promise) in self.iter().enumerate() {
             if let Some(promise) = promise {
                 if promise.source() == &nodes {
@@ -57,7 +57,8 @@ impl PromiseSet {
 
         // If this is a new promise, add it to the pool.
         self.push(Some(JITPromise::Deferred(nodes)));
-        return self.len() - 1;
+
+        self.len() - 1
     }
 }
 

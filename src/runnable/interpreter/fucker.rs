@@ -4,7 +4,7 @@ use std::io::{self, Read, Write};
 
 use super::super::Runnable;
 use super::instr::Instr;
-use crate::parser::ASTNode;
+use crate::parser::AstNode;
 
 /// BrainFuck virtual machine
 pub struct Fucker {
@@ -21,7 +21,7 @@ pub struct Fucker {
 }
 
 impl Fucker {
-    pub fn new(nodes: VecDeque<ASTNode>) -> Self {
+    pub fn new(nodes: VecDeque<AstNode>) -> Self {
         Fucker {
             program: Self::compile(nodes),
             memory: vec![0u8; 0x4000],
@@ -32,21 +32,21 @@ impl Fucker {
         }
     }
 
-    fn compile(nodes: VecDeque<ASTNode>) -> Vec<Instr> {
+    fn compile(nodes: VecDeque<AstNode>) -> Vec<Instr> {
         let mut instrs = Vec::new();
 
         for node in nodes {
             match node {
-                ASTNode::Incr(n) => instrs.push(Instr::Incr(n)),
-                ASTNode::Decr(n) => instrs.push(Instr::Decr(n)),
-                ASTNode::Next(n) => instrs.push(Instr::Next(n)),
-                ASTNode::Prev(n) => instrs.push(Instr::Prev(n)),
-                ASTNode::Print => instrs.push(Instr::Print),
-                ASTNode::Read => instrs.push(Instr::Read),
-                ASTNode::Set(n) => instrs.push(Instr::Set(n)),
-                ASTNode::AddTo(n) => instrs.push(Instr::AddTo(n)),
-                ASTNode::SubFrom(n) => instrs.push(Instr::SubFrom(n)),
-                ASTNode::Loop(vec) => {
+                AstNode::Incr(n) => instrs.push(Instr::Incr(n)),
+                AstNode::Decr(n) => instrs.push(Instr::Decr(n)),
+                AstNode::Next(n) => instrs.push(Instr::Next(n)),
+                AstNode::Prev(n) => instrs.push(Instr::Prev(n)),
+                AstNode::Print => instrs.push(Instr::Print),
+                AstNode::Read => instrs.push(Instr::Read),
+                AstNode::Set(n) => instrs.push(Instr::Set(n)),
+                AstNode::AddTo(n) => instrs.push(Instr::AddTo(n)),
+                AstNode::SubFrom(n) => instrs.push(Instr::SubFrom(n)),
+                AstNode::Loop(vec) => {
                     let inner_loop = Self::compile(vec);
                     // Add 1 to the offset to account for the BeginLoop/EndLoop instr
                     let offset = inner_loop.len() + 1;
@@ -187,12 +187,12 @@ impl Runnable for Fucker {
 mod tests {
     use super::super::super::test_buffer::SharedBuffer;
     use super::*;
-    use crate::parser::AST;
+    use crate::parser::Ast;
     use std::io::Cursor;
 
     #[test]
     fn run_hello_world() {
-        let ast = AST::parse(include_str!("../../../test/programs/hello_world.bf")).unwrap();
+        let ast = Ast::parse(include_str!("../../../test/programs/hello_world.bf")).unwrap();
         let mut fucker = Fucker::new(ast.data);
         let shared_buffer = SharedBuffer::new();
         fucker.io_write = Box::new(shared_buffer.clone());
@@ -207,7 +207,7 @@ mod tests {
     fn run_rot13() {
         // This rot13 program terminates after 16 characters so we can test it. Otherwise it would
         // wait on input forever.
-        let ast = AST::parse(include_str!("../../../test/programs/rot13-16char.bf")).unwrap();
+        let ast = Ast::parse(include_str!("../../../test/programs/rot13-16char.bf")).unwrap();
         let mut fucker = Fucker::new(ast.data);
         let shared_buffer = SharedBuffer::new();
         fucker.io_write = Box::new(shared_buffer.clone());
