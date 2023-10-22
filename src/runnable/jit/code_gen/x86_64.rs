@@ -2,6 +2,7 @@ use super::super::jit_promise::JITPromiseID;
 use super::super::jit_target::JITTargetVTable;
 
 pub const RET: u8 = 0xc3;
+const PTR_BYTES: u8 = 8;
 
 fn callee_save_to_stack(bytes: &mut Vec<u8>) {
     // push   rbx
@@ -184,13 +185,13 @@ fn fn_call_post(bytes: &mut Vec<u8>) {
 
 /// Make a call to a vtable entry in r12.
 fn call_vtable_entry(bytes: &mut Vec<u8>, entry: JITTargetVTable) {
-    // Load function pointer from vtable at index into rax
+    // Call function pointer from vtable at index
     // call   QWORD PTR [r12+index]
     bytes.push(0x41);
     bytes.push(0xff);
     bytes.push(0x54);
     bytes.push(0x24);
-    bytes.push((entry as u8) * 8);
+    bytes.push((entry as u8) * PTR_BYTES);
 }
 
 pub fn print(bytes: &mut Vec<u8>) {
