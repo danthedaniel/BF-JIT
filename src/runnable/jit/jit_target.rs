@@ -15,7 +15,7 @@ use super::jit_helpers::make_executable;
 const INLINE_THRESHOLD: usize = 0x16;
 
 /// Indexes into the vtable passed into JIT compiled code
-pub enum JITTargetVTable {
+pub enum VTableEntry {
     JITCallback = 0,
     Read = 1,
     Print = 2,
