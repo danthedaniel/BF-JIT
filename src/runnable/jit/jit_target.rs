@@ -21,6 +21,12 @@ pub enum JITTargetVTable {
     Print = 2,
 }
 
+/// A type to unify all function pointers behind. Because the vtable is not used in the
+/// Rust code at all, the type is not important.
+type VoidPtr = *mut ();
+/// VTable for JIT compiled code
+type VTable<const SIZE: usize> = [VoidPtr; SIZE];
+
 pub struct JITContext {
     /// All non-root JITTargets in the program
     promises: PromiseSet,
@@ -185,21 +191,16 @@ impl JITTarget {
 
     /// Execute the bytes buffer as a function.
     fn exec(&mut self, mem_ptr: *mut u8) -> *mut u8 {
-        // We just need a type to unify all function pointers behind. Because
-        // the vtable is not used in the Rust code at all, the type is not
-        // important.
-        type VoidPtr = *mut ();
-
-        let func: fn(*mut u8, &mut JITTarget, &[VoidPtr]) -> *mut u8 =
+        let func: fn(*mut u8, &mut JITTarget, &VTable<3>) -> *mut u8 =
             unsafe { mem::transmute(self.bytes.as_ptr()) };
 
-        let vtable = &[
+        let vtable: VTable<3> = [
             Self::jit_callback as VoidPtr,
             Self::read as VoidPtr,
             Self::print as VoidPtr,
         ];
 
-        func(mem_ptr, self, vtable)
+        func(mem_ptr, self, &vtable)
     }
 }
 
