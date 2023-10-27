@@ -4,6 +4,8 @@ pub mod jit;
 #[cfg(test)]
 mod test_buffer;
 
+const BF_MEMORY_SIZE: usize = 30_000;
+
 /// Simple interface for an type that can be invoked without any arguments and
 /// with no return value.
 ///

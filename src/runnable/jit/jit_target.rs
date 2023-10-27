@@ -1,8 +1,10 @@
 use super::super::Runnable;
 use super::code_gen;
 use super::immutable::Immutable;
+use super::jit_helpers::make_executable;
 use super::jit_promise::{JITPromise, JITPromiseID, PromiseSet};
 use crate::parser::AstNode;
+use crate::runnable::BF_MEMORY_SIZE;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::fmt;
@@ -10,9 +12,8 @@ use std::io::{self, Read, Write};
 use std::mem;
 use std::rc::Rc;
 
-use super::jit_helpers::make_executable;
-
-const INLINE_THRESHOLD: usize = 0x16;
+/// Set arbitrarily to 16
+const INLINE_THRESHOLD: usize = 0x10;
 
 /// Indexes into the vtable passed into JIT compiled code
 pub enum VTableEntry {
@@ -191,14 +192,14 @@ impl JITTarget {
 
     /// Execute the bytes buffer as a function.
     fn exec(&mut self, mem_ptr: *mut u8) -> *mut u8 {
-        let func: fn(*mut u8, &mut JITTarget, &VTable<3>) -> *mut u8 =
-            unsafe { mem::transmute(self.bytes.as_ptr()) };
-
         let vtable: VTable<3> = [
             Self::jit_callback as VoidPtr,
             Self::read as VoidPtr,
             Self::print as VoidPtr,
         ];
+
+        type JitFunc = extern "C" fn(*mut u8, &mut JITTarget, &VTable<3>) -> *mut u8;
+        let func: JitFunc = unsafe { mem::transmute(self.bytes.as_ptr()) };
 
         func(mem_ptr, self, &vtable)
     }
@@ -206,10 +207,8 @@ impl JITTarget {
 
 impl Runnable for JITTarget {
     fn run(&mut self) {
-        let mut bf_mem = vec![0u8; 30_000]; // Memory space used by BrainFuck
-        let mem_ptr = bf_mem.as_mut_ptr();
-
-        self.exec(mem_ptr);
+        let mut bf_mem = [0u8; BF_MEMORY_SIZE]; // Memory space used by BrainFuck
+        self.exec(bf_mem.as_mut_ptr());
     }
 }
 

@@ -154,10 +154,18 @@ impl Ast {
             // of adding another identical instruction.
             let combined = match (prev_node, &next_node) {
                 // Combine sequential Incr, Decr, Next and Prev
-                (Some(AstNode::Incr(b)), AstNode::Incr(a)) => Some(AstNode::Incr(a.wrapping_add(*b))),
-                (Some(AstNode::Decr(b)), AstNode::Decr(a)) => Some(AstNode::Decr(a.wrapping_add(*b))),
-                (Some(AstNode::Next(b)), AstNode::Next(a)) => Some(AstNode::Next(a.wrapping_add(*b))),
-                (Some(AstNode::Prev(b)), AstNode::Prev(a)) => Some(AstNode::Prev(a.wrapping_add(*b))),
+                (Some(AstNode::Incr(b)), AstNode::Incr(a)) => {
+                    Some(AstNode::Incr(a.wrapping_add(*b)))
+                }
+                (Some(AstNode::Decr(b)), AstNode::Decr(a)) => {
+                    Some(AstNode::Decr(a.wrapping_add(*b)))
+                }
+                (Some(AstNode::Next(b)), AstNode::Next(a)) => {
+                    Some(AstNode::Next(a.wrapping_add(*b)))
+                }
+                (Some(AstNode::Prev(b)), AstNode::Prev(a)) => {
+                    Some(AstNode::Prev(a.wrapping_add(*b)))
+                }
                 // Combine Incr or Decr with Set
                 (Some(AstNode::Set(a)), AstNode::Incr(b)) => Some(AstNode::Set(a.wrapping_add(*b))),
                 (Some(AstNode::Set(a)), AstNode::Decr(b)) => Some(AstNode::Set(a.wrapping_sub(*b))),

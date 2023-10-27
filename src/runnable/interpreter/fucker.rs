@@ -5,6 +5,7 @@ use std::io::{self, Read, Write};
 use super::super::Runnable;
 use super::instr::Instr;
 use crate::parser::AstNode;
+use crate::runnable::BF_MEMORY_SIZE;
 
 /// BrainFuck virtual machine
 pub struct Fucker {
@@ -24,7 +25,7 @@ impl Fucker {
     pub fn new(nodes: VecDeque<AstNode>) -> Self {
         Fucker {
             program: Self::compile(nodes),
-            memory: vec![0u8; 0x4000],
+            memory: vec![0u8; BF_MEMORY_SIZE],
             pc: 0,
             dp: 0,
             io_read: Box::new(io::stdin()),
