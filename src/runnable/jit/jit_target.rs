@@ -12,8 +12,8 @@ use std::io::{self, Read, Write};
 use std::mem;
 use std::rc::Rc;
 
-/// Set arbitrarily to 16
-const INLINE_THRESHOLD: usize = 0x10;
+/// Set arbitrarily
+const INLINE_THRESHOLD: usize = 0x16;
 
 /// Indexes into the vtable passed into JIT compiled code
 pub enum VTableEntry {
@@ -207,7 +207,7 @@ impl JITTarget {
 
 impl Runnable for JITTarget {
     fn run(&mut self) {
-        let mut bf_mem = [0u8; BF_MEMORY_SIZE]; // Memory space used by BrainFuck
+        let mut bf_mem = vec![0u8; BF_MEMORY_SIZE]; // Memory space used by BrainFuck
         self.exec(bf_mem.as_mut_ptr());
     }
 }
@@ -215,8 +215,9 @@ impl Runnable for JITTarget {
 #[cfg(test)]
 mod tests {
     use super::super::super::test_buffer::SharedBuffer;
-    use super::*;
+    use super::JITTarget;
     use crate::parser::Ast;
+    use crate::runnable::Runnable;
     use std::io::Cursor;
 
     #[test]
