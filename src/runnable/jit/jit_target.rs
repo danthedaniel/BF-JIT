@@ -24,7 +24,7 @@ pub enum VTableEntry {
 
 /// A type to unify all function pointers behind. Because the vtable is not used in the
 /// Rust code at all, the type is not important.
-type VoidPtr = *mut ();
+type VoidPtr = *const ();
 /// VTable for JIT compiled code
 type VTable<const SIZE: usize> = [VoidPtr; SIZE];
 
