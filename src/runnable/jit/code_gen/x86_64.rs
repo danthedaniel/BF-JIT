@@ -1,3 +1,5 @@
+use std::convert::TryInto;
+
 use super::super::jit_promise::JITPromiseID;
 use super::super::jit_target::VTableEntry;
 
@@ -122,8 +124,8 @@ pub fn incr(bytes: &mut Vec<u8>, n: u8) {
 }
 
 pub fn next(bytes: &mut Vec<u8>, n: usize) {
-    // HACK: Assumes usize won't be more than 32 bit...
-    let n_bytes = (n as u32).to_ne_bytes();
+    let n_u32: u32 = n.try_into().expect("n was more than 32 bits");
+    let n_bytes = n_u32.to_ne_bytes();
 
     // add    r10,n
     bytes.push(0x49);
@@ -136,8 +138,8 @@ pub fn next(bytes: &mut Vec<u8>, n: usize) {
 }
 
 pub fn prev(bytes: &mut Vec<u8>, n: usize) {
-    // HACK: Assumes usize won't be more than 32 bit...
-    let n_bytes = (n as u32).to_ne_bytes();
+    let n_u32: u32 = n.try_into().expect("n was more than 32 bits");
+    let n_bytes = n_u32.to_ne_bytes();
 
     // sub    r10,n
     bytes.push(0x49);
