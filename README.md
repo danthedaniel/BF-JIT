@@ -4,7 +4,7 @@ BF Just-in-Time Compiler
 [On crates.io](https://crates.io/crates/fucker)
 
 A very over-engineered [BrainFuck](https://en.wikipedia.org/wiki/Brainfuck) interpreter/optimizing JIT compiler written in
-rust.
+rust. Done from first-priciples without any research or examination of prior art.
 
 ## Usage
 
