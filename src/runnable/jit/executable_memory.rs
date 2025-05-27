@@ -79,22 +79,23 @@ impl ExecutableMemory {
 
     #[cfg(target_os = "linux")]
     fn allocate_memory(buffer_size_bytes: usize) -> *mut u8 {
-        let mut buffer = std::mem::MaybeUninit::<*mut libc::c_void>::uninit();
-        let buffer_ptr_ptr = buffer.as_mut_ptr();
-
-        let memalign_result = unsafe {
-            libc::posix_memalign(
-                buffer_ptr_ptr,
-                *(PAGE_SIZE.get().unwrap()), 
+        // On Linux, use mmap for memory that will become executable
+        let ptr = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
                 buffer_size_bytes,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_ANON | libc::MAP_PRIVATE,
+                -1,
+                0,
             )
         };
         
-        if memalign_result != 0 {
-            panic!("Failed to allocate aligned memory");
+        if ptr == libc::MAP_FAILED {
+            panic!("Failed to allocate memory: {}", std::io::Error::last_os_error());
         }
         
-        unsafe { buffer.assume_init() as *mut u8 }
+        ptr as *mut u8
     }
 
     #[cfg(target_arch = "aarch64")]
@@ -130,7 +131,7 @@ impl Drop for ExecutableMemory {
     #[cfg(target_os = "linux")]
     fn drop(&mut self) {
         unsafe {
-            libc::free(self.ptr as *mut libc::c_void);
+            libc::munmap(self.ptr as *mut libc::c_void, self.capacity);
         }
     }
 }
