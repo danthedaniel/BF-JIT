@@ -178,7 +178,7 @@ fn test_interpreter_vs_jit_consistency() {
     // Test that interpreter and JIT produce the same output
     let jit_output = run_fucker(&["tests/programs/hello_world.bf"]);
     let int_output = run_fucker(&["--int", "tests/programs/hello_world.bf"]);
-    
+
     assert!(jit_output.status.success());
     assert!(int_output.status.success());
     assert_eq!(jit_output.stdout, int_output.stdout);

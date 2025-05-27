@@ -53,7 +53,7 @@ impl ExecutableMemory {
             capacity: buffer_size_bytes,
         };
     }
-    
+
     pub fn as_ptr(&self) -> *const u8 {
         self.ptr
     }
@@ -69,11 +69,11 @@ impl ExecutableMemory {
                 0,
             )
         };
-        
+
         if ptr == libc::MAP_FAILED {
             panic!("Failed to allocate JIT memory: {}", std::io::Error::last_os_error());
         }
-        
+
         ptr as *mut u8
     }
 
@@ -109,7 +109,7 @@ impl Drop for ExecutableMemory {
 
 impl Deref for ExecutableMemory {
     type Target = [u8];
-    
+
     fn deref(&self) -> &Self::Target {
         unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
     }
