@@ -2,9 +2,11 @@ use std::ops::Deref;
 use std::sync::OnceLock;
 use libc::{sysconf, _SC_PAGESIZE};
 
-// MAP_JIT is macOS-specific
-#[cfg(all(target_os = "macos"))]
-const MAP_JIT: i32 = 0x0800;
+// macos needs an extra flag
+#[cfg(target_os = "macos")]
+const MMAP_FLAGS: i32 = libc::MAP_ANON | libc::MAP_PRIVATE | /* MAP_JIT */ 0x0800;
+#[cfg(target_os = "linux")]
+const MMAP_FLAGS: i32 = libc::MAP_ANON | libc::MAP_PRIVATE;
 
 static PAGE_SIZE: OnceLock<usize> = OnceLock::new();
 
@@ -56,15 +58,13 @@ impl ExecutableMemory {
         self.ptr
     }
 
-    #[cfg(target_os = "macos")]
     fn allocate_memory(buffer_size_bytes: usize) -> *mut u8 {
-        // On macOS ARM64, use mmap with MAP_JIT
         let ptr = unsafe {
             libc::mmap(
                 std::ptr::null_mut(),
                 buffer_size_bytes,
                 libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_ANON | libc::MAP_PRIVATE | MAP_JIT,
+                MMAP_FLAGS,
                 -1,
                 0,
             )
@@ -72,27 +72,6 @@ impl ExecutableMemory {
         
         if ptr == libc::MAP_FAILED {
             panic!("Failed to allocate JIT memory: {}", std::io::Error::last_os_error());
-        }
-        
-        ptr as *mut u8
-    }
-
-    #[cfg(target_os = "linux")]
-    fn allocate_memory(buffer_size_bytes: usize) -> *mut u8 {
-        // On Linux, use mmap for memory that will become executable
-        let ptr = unsafe {
-            libc::mmap(
-                std::ptr::null_mut(),
-                buffer_size_bytes,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_ANON | libc::MAP_PRIVATE,
-                -1,
-                0,
-            )
-        };
-        
-        if ptr == libc::MAP_FAILED {
-            panic!("Failed to allocate memory: {}", std::io::Error::last_os_error());
         }
         
         ptr as *mut u8
@@ -121,14 +100,6 @@ impl ExecutableMemory {
 }
 
 impl Drop for ExecutableMemory {
-    #[cfg(target_os = "macos")]
-    fn drop(&mut self) {
-        unsafe {
-            libc::munmap(self.ptr as *mut libc::c_void, self.capacity);
-        }
-    }
-
-    #[cfg(target_os = "linux")]
     fn drop(&mut self) {
         unsafe {
             libc::munmap(self.ptr as *mut libc::c_void, self.capacity);
