@@ -216,10 +216,17 @@ The JIT compiler implements I/O through a virtual function table, allowing:
 
 Ran on [mandelbrot.bf](https://github.com/erikdubbelboer/brainfuck-jit/blob/919df502dc8a0441572180700de86be405387fcc/mandelbrot.bf).
 
-Tested with a Intel Core i5-3230M.
+### Intel Core i5-3230M
 
 | Version | Runtime |
 |---|--:|
 | Naive Interpreter | 56.824s |
 | Optimized Interpreter | 19.055s |
 | Optimized JIT | 1.450s |
+
+### Apple M3
+
+| Version | Runtime |
+|---|--:|
+| Optimized Interpreter | 4.35s |
+| Optimized JIT | 0.45s |
