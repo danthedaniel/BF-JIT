@@ -14,19 +14,20 @@ fn allocate_buffer(length: usize) -> Vec<u8> {
     let buffer_ptr = buffer.as_mut_ptr();
 
     let page_size = *PAGE_SIZE.get_or_init(|| unsafe { sysconf(_SC_PAGESIZE) as usize });
-    let buffer_size = length.div_ceil(page_size);
+    let buffer_size_pages = length.div_ceil(page_size);
+    let buffer_size_bytes = buffer_size_pages * page_size;
 
     unsafe {
-        libc::posix_memalign(buffer_ptr, page_size, buffer_size);
+        libc::posix_memalign(buffer_ptr, page_size, buffer_size_bytes);
         libc::mprotect(
             *buffer_ptr,
-            buffer_size,
+            buffer_size_bytes,
             libc::PROT_EXEC | libc::PROT_WRITE | libc::PROT_READ,
         );
         // for now, prepopulate with 'RET'
-        libc::memset(*buffer_ptr, code_gen::RET as i32, buffer_size);
+        libc::memset(*buffer_ptr, code_gen::RET as i32, buffer_size_bytes);
 
-        Vec::from_raw_parts(buffer.assume_init() as *mut u8, length, buffer_size)
+        Vec::from_raw_parts(buffer.assume_init() as *mut u8, length, buffer_size_bytes)
     }
 }
 

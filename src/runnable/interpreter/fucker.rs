@@ -168,7 +168,7 @@ impl Fucker {
     }
 
     pub fn reset(&mut self) {
-        for i in 0..(self.memory.len() - 1) {
+        for i in 0..self.memory.len() {
             self.memory[i] = 0;
         }
 
