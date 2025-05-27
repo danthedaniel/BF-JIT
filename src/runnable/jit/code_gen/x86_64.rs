@@ -422,3 +422,90 @@ pub fn jit_loop(bytes: &mut Vec<u8>, loop_index: JITPromiseID) {
     bytes.push(0x41);
     bytes.push(0x5b);
 }
+
+pub fn multiply_add(bytes: &mut Vec<u8>, offset: isize, factor: u8) {
+    // Copy the current cell into EAX.
+    // movzx  eax,BYTE PTR [r10]
+    bytes.push(0x41);
+    bytes.push(0x0f);
+    bytes.push(0xb6);
+    bytes.push(0x02);
+
+    // Multiply by factor
+    // imul   eax,eax,factor
+    bytes.push(0x69);
+    bytes.push(0xc0);
+    bytes.push(factor);
+    bytes.push(0x00);
+    bytes.push(0x00);
+    bytes.push(0x00);
+
+    let offset_bytes = offset.to_ne_bytes();
+
+    // Set r13 to the offset.
+    // movabs r13,offset
+    bytes.push(0x49);
+    bytes.push(0xbd);
+    bytes.push(offset_bytes[0]);
+    bytes.push(offset_bytes[1]);
+    bytes.push(offset_bytes[2]);
+    bytes.push(offset_bytes[3]);
+    bytes.push(offset_bytes[4]);
+    bytes.push(offset_bytes[5]);
+    bytes.push(offset_bytes[6]);
+    bytes.push(offset_bytes[7]);
+
+    // Add the result to the cell at the offset.
+    // add    BYTE PTR [r10+r13],al
+    bytes.push(0x43);
+    bytes.push(0x00);
+    bytes.push(0x04);
+    bytes.push(0x2a);
+
+    // Set the current memory cell to 0.
+    // mov    BYTE PTR [r10],0
+    bytes.push(0x41);
+    bytes.push(0xc6);
+    bytes.push(0x02);
+    bytes.push(0x00);
+}
+
+pub fn copy_to(bytes: &mut Vec<u8>, offsets: Vec<isize>) {
+    // Copy the current cell into EAX.
+    // movzx  eax,BYTE PTR [r10]
+    bytes.push(0x41);
+    bytes.push(0x0f);
+    bytes.push(0xb6);
+    bytes.push(0x02);
+
+    for offset in offsets {
+        let offset_bytes = offset.to_ne_bytes();
+
+        // Set r13 to the offset.
+        // movabs r13,offset
+        bytes.push(0x49);
+        bytes.push(0xbd);
+        bytes.push(offset_bytes[0]);
+        bytes.push(offset_bytes[1]);
+        bytes.push(offset_bytes[2]);
+        bytes.push(offset_bytes[3]);
+        bytes.push(offset_bytes[4]);
+        bytes.push(offset_bytes[5]);
+        bytes.push(offset_bytes[6]);
+        bytes.push(offset_bytes[7]);
+
+        // Add the current cell value to the cell at the offset.
+        // add    BYTE PTR [r10+r13],al
+        bytes.push(0x43);
+        bytes.push(0x00);
+        bytes.push(0x04);
+        bytes.push(0x2a);
+    }
+
+    // Set the current memory cell to 0.
+    // mov    BYTE PTR [r10],0
+    bytes.push(0x41);
+    bytes.push(0xc6);
+    bytes.push(0x02);
+    bytes.push(0x00);
+}

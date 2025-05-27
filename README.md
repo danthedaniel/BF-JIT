@@ -57,15 +57,17 @@ The compiler first parses BrainFuck source code into an Abstract Syntax Tree (AS
 ```rust
 #[derive(Debug, Clone, PartialEq)]
 pub enum AstNode {
-    Incr(u8),      // Add to current cell
-    Decr(u8),      // Subtract from current cell
-    Next(usize),   // Move data pointer right
-    Prev(usize),   // Move data pointer left
-    Print,         // Output current cell as ASCII
-    Read,          // Read ASCII input to current cell
-    Set(u8),       // Set current cell to literal value
-    AddTo(isize),  // Add current cell to offset cell, zero current
+    Incr(u8), // Add to current cell
+    Decr(u8), // Subtract from current cell
+    Next(usize), // Move data pointer right
+    Prev(usize), // Move data pointer left
+    Print, // Output current cell as ASCII
+    Read, // Read ASCII input to current cell
+    Set(u8), // Set current cell to literal value
+    AddTo(isize), // Add current cell to offset cell, zero current
     SubFrom(isize),// Subtract current cell from offset cell, zero current
+    MultiplyAddTo(isize, u8), // Multiply current cell and add to cell at offset, zero current
+    CopyTo(Vec<isize>), // Copy current cell to multiple offsets, zero current
     Loop(VecDeque<AstNode>), // Loop while current cell != 0
 }
 ```

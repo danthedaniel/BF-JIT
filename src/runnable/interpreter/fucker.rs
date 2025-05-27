@@ -47,6 +47,10 @@ impl Fucker {
                 AstNode::Set(n) => instrs.push(Instr::Set(n)),
                 AstNode::AddTo(n) => instrs.push(Instr::AddTo(n)),
                 AstNode::SubFrom(n) => instrs.push(Instr::SubFrom(n)),
+                AstNode::MultiplyAddTo(offset, factor) => {
+                    instrs.push(Instr::MultiplyAddTo(offset, factor))
+                }
+                AstNode::CopyTo(offsets) => instrs.push(Instr::CopyTo(offsets)),
                 AstNode::Loop(vec) => {
                     let inner_loop = Self::compile(vec);
                     // Add 1 to the offset to account for the BeginLoop/EndLoop instr
@@ -79,7 +83,7 @@ impl Fucker {
             self.memory.resize(new_len, 0);
         }
 
-        let instr = self.program[self.pc];
+        let instr = self.program[self.pc].clone();
         let current = self.memory[self.dp];
 
         match instr {
@@ -147,6 +151,40 @@ impl Fucker {
 
                     self.memory[target_pos as usize] =
                         self.memory[target_pos as usize].wrapping_sub(self.memory[self.dp]);
+                    self.memory[self.dp] = 0;
+                }
+            }
+            Instr::MultiplyAddTo(offset, factor) => {
+                if self.memory[self.dp] != 0 {
+                    let target_pos = self.dp as isize + offset;
+
+                    if (target_pos < 0) || (target_pos as usize >= self.memory.len()) {
+                        eprintln!("Attempted to move data outside of the bounds of memory");
+                        return false;
+                    }
+
+                    let value = self.memory[self.dp].wrapping_mul(factor);
+                    self.memory[target_pos as usize] =
+                        self.memory[target_pos as usize].wrapping_add(value);
+                    self.memory[self.dp] = 0;
+                }
+            }
+            Instr::CopyTo(offsets) => {
+                if self.memory[self.dp] != 0 {
+                    let value = self.memory[self.dp];
+
+                    for offset in offsets {
+                        let target_pos = self.dp as isize + offset;
+
+                        if (target_pos < 0) || (target_pos as usize >= self.memory.len()) {
+                            eprintln!("Attempted to copy data outside of the bounds of memory");
+                            return false;
+                        }
+
+                        self.memory[target_pos as usize] =
+                            self.memory[target_pos as usize].wrapping_add(value);
+                    }
+
                     self.memory[self.dp] = 0;
                 }
             }

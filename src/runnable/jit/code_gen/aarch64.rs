@@ -427,3 +427,101 @@ pub fn jit_loop(bytes: &mut Vec<u8>, loop_index: JITPromiseID) {
     // ldp x20, x21, [sp], #16
     emit_u32(bytes, 0xa8c157f4);
 }
+
+pub fn multiply_add(bytes: &mut Vec<u8>, offset: isize, factor: u8) {
+    // Load current cell value
+    // ldrb w8, [x19]
+    emit_u32(bytes, 0x39400268);
+
+    // Multiply by factor
+    // mov w9, #factor
+    emit_u32(bytes, 0x52800009 | ((factor as u32) << 5));
+
+    // mul w8, w8, w9
+    emit_u32(bytes, 0x1b097d08);
+
+    // Load value at offset and add
+    if offset >= -256 && offset <= 255 {
+        // ldrb w9, [x19, #offset]
+        let offset_encoded = if offset >= 0 {
+            0x39400269 | ((offset as u32) << 10)
+        } else {
+            0x38400269 | encode_signed_imm9(offset)
+        };
+        emit_u32(bytes, offset_encoded);
+
+        // add w9, w9, w8
+        emit_u32(bytes, 0x0b080129);
+
+        // Store back at offset
+        if offset >= 0 && offset <= 4095 {
+            // strb w9, [x19, #offset]
+            emit_u32(bytes, 0x39000269 | ((offset as u32) << 10));
+        } else {
+            // sturb w9, [x19, #offset]
+            emit_u32(bytes, 0x38000269 | encode_signed_imm9(offset));
+        }
+    } else {
+        // Load offset into x9
+        load_immediate_x9(bytes, offset);
+
+        // ldrb w10, [x19, x9]
+        emit_u32(bytes, 0x38696a6a);
+
+        // add w10, w10, w8
+        emit_u32(bytes, 0x0b08014a);
+
+        // strb w10, [x19, x9]
+        emit_u32(bytes, 0x3829626a);
+    }
+
+    // Set current cell to 0
+    // strb wzr, [x19]
+    emit_u32(bytes, 0x3900027f);
+}
+
+pub fn copy_to(bytes: &mut Vec<u8>, offsets: Vec<isize>) {
+    // Load current cell value
+    // ldrb w8, [x19]
+    emit_u32(bytes, 0x39400268);
+
+    for offset in offsets {
+        if offset >= -256 && offset <= 255 {
+            // ldrb w9, [x19, #offset]
+            let offset_encoded = if offset >= 0 {
+                0x39400269 | ((offset as u32) << 10)
+            } else {
+                0x38400269 | encode_signed_imm9(offset)
+            };
+            emit_u32(bytes, offset_encoded);
+
+            // add w9, w9, w8
+            emit_u32(bytes, 0x0b080129);
+
+            // Store back at offset
+            if offset >= 0 && offset <= 4095 {
+                // strb w9, [x19, #offset]
+                emit_u32(bytes, 0x39000269 | ((offset as u32) << 10));
+            } else {
+                // sturb w9, [x19, #offset]
+                emit_u32(bytes, 0x38000269 | encode_signed_imm9(offset));
+            }
+        } else {
+            // Load offset into x9
+            load_immediate_x9(bytes, offset);
+
+            // ldrb w10, [x19, x9]
+            emit_u32(bytes, 0x38696a6a);
+
+            // add w10, w10, w8
+            emit_u32(bytes, 0x0b08014a);
+
+            // strb w10, [x19, x9]
+            emit_u32(bytes, 0x3829626a);
+        }
+    }
+
+    // Set current cell to 0
+    // strb wzr, [x19]
+    emit_u32(bytes, 0x3900027f);
+}

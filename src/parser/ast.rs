@@ -21,6 +21,10 @@ pub enum AstNode {
     AddTo(isize),
     /// Subtract the current cell from the cell n spaces away and set the current cell to 0.
     SubFrom(isize),
+    /// Multiply current cell by a factor and add to cell at offset, then set current to 0.
+    MultiplyAddTo(isize, u8),
+    /// Copy current cell to multiple offsets, then set current to 0.
+    CopyTo(Vec<isize>),
     /// Loop over the contained instructions while the current memory cell is
     /// not zero.
     Loop(VecDeque<AstNode>),
@@ -135,11 +139,81 @@ impl Ast {
                     let offset = *a as isize;
                     return Some(AstNode::SubFrom(offset));
                 }
-                _ => return None,
+                // MultiplyAddTo
+                (AstNode::Decr(1), AstNode::Next(a), AstNode::Incr(n), AstNode::Prev(b))
+                    if *a == *b && *n > 1 =>
+                {
+                    let offset = *a as isize;
+                    return Some(AstNode::MultiplyAddTo(offset, *n));
+                }
+                (AstNode::Decr(1), AstNode::Prev(a), AstNode::Incr(n), AstNode::Next(b))
+                    if *a == *b && *n > 1 =>
+                {
+                    let offset = -(*a as isize);
+                    return Some(AstNode::MultiplyAddTo(offset, *n));
+                }
+                _ => {}
             };
         }
 
+        // Check for copy loops (e.g., [->>+>+<<<])
+        if Self::is_copy_loop(input) {
+            if let Some(copy_node) = Self::create_copy_node(input) {
+                return Some(copy_node);
+            }
+        }
+
         None
+    }
+
+    /// Check if the loop is a copy loop pattern
+    fn is_copy_loop(input: &VecDeque<AstNode>) -> bool {
+        if input.is_empty() || input[0] != AstNode::Decr(1) {
+            return false;
+        }
+
+        let mut position = 0isize;
+        let mut increments = std::collections::HashMap::new();
+
+        for node in input.iter().skip(1) {
+            match node {
+                AstNode::Next(n) => position += *n as isize,
+                AstNode::Prev(n) => position -= *n as isize,
+                AstNode::Incr(n) => {
+                    *increments.entry(position).or_insert(0) += *n as i32;
+                }
+                _ => return false,
+            }
+        }
+
+        // Must return to starting position
+        if position != 0 {
+            return false;
+        }
+
+        // All increments must be 1
+        increments.values().all(|&v| v == 1)
+    }
+
+    /// Create a CopyTo node from a copy loop
+    fn create_copy_node(input: &VecDeque<AstNode>) -> Option<AstNode> {
+        let mut position = 0isize;
+        let mut targets = Vec::new();
+
+        for node in input.iter().skip(1) {
+            match node {
+                AstNode::Next(n) => position += *n as isize,
+                AstNode::Prev(n) => position -= *n as isize,
+                AstNode::Incr(1) => targets.push(position),
+                _ => {}
+            }
+        }
+
+        if !targets.is_empty() {
+            Some(AstNode::CopyTo(targets))
+        } else {
+            None
+        }
     }
 
     /// Convert runs of instructions into bulk operations.
@@ -165,6 +239,36 @@ impl Ast {
                 }
                 (Some(AstNode::Prev(b)), AstNode::Prev(a)) => {
                     Some(AstNode::Prev(a.wrapping_add(*b)))
+                }
+                // Dead code elimination: operations that cancel each other
+                (Some(AstNode::Incr(a)), AstNode::Decr(b)) if *a == *b => {
+                    output.pop_back();
+                    continue;
+                }
+                (Some(AstNode::Decr(a)), AstNode::Incr(b)) if *a == *b => {
+                    output.pop_back();
+                    continue;
+                }
+                (Some(AstNode::Next(a)), AstNode::Prev(b)) if *a == *b => {
+                    output.pop_back();
+                    continue;
+                }
+                (Some(AstNode::Prev(a)), AstNode::Next(b)) if *a == *b => {
+                    output.pop_back();
+                    continue;
+                }
+                // Partial cancellation
+                (Some(AstNode::Incr(a)), AstNode::Decr(b)) if *a > *b => {
+                    Some(AstNode::Incr(a - b))
+                }
+                (Some(AstNode::Incr(a)), AstNode::Decr(b)) if *a < *b => {
+                    Some(AstNode::Decr(b - a))
+                }
+                (Some(AstNode::Decr(a)), AstNode::Incr(b)) if *a > *b => {
+                    Some(AstNode::Decr(a - b))
+                }
+                (Some(AstNode::Decr(a)), AstNode::Incr(b)) if *a < *b => {
+                    Some(AstNode::Incr(b - a))
                 }
                 // Combine Incr or Decr with Set
                 (Some(AstNode::Set(a)), AstNode::Incr(b)) => Some(AstNode::Set(a.wrapping_add(*b))),
@@ -237,6 +341,41 @@ mod tests {
     fn removes_leading_loops() {
         let ast = Ast::parse("[-]").unwrap();
         assert_eq!(ast.data.len(), 0);
+    }
+
+    #[test]
+    fn simplify_to_multiply() {
+        let ast = Ast::parse("+[->>+++<<]").unwrap();
+        assert_eq!(ast.data.len(), 2);
+        assert_eq!(ast.data[0], AstNode::Incr(1));
+        assert_eq!(ast.data[1], AstNode::MultiplyAddTo(2, 3));
+    }
+
+    #[test]
+    fn simplify_to_copy() {
+        let ast = Ast::parse("+[->>+>+<<<]").unwrap();
+        assert_eq!(ast.data.len(), 2);
+        assert_eq!(ast.data[0], AstNode::Incr(1));
+        assert_eq!(ast.data[1], AstNode::CopyTo(vec![2, 3]));
+    }
+
+    #[test]
+    fn dead_code_elimination() {
+        // Complete cancellation
+        let ast = Ast::parse("+-").unwrap();
+        assert_eq!(ast.data.len(), 0);
+
+        let ast = Ast::parse("><").unwrap();
+        assert_eq!(ast.data.len(), 0);
+
+        // Partial cancellation
+        let ast = Ast::parse("+++--").unwrap();
+        assert_eq!(ast.data.len(), 1);
+        assert_eq!(ast.data[0], AstNode::Incr(1));
+
+        let ast = Ast::parse("++---").unwrap();
+        assert_eq!(ast.data.len(), 1);
+        assert_eq!(ast.data[0], AstNode::Decr(1));
     }
 
     #[test]

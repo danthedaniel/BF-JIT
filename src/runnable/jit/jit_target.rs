@@ -108,6 +108,10 @@ impl JITTarget {
                 AstNode::Set(n) => code_gen::set(&mut bytes, n),
                 AstNode::AddTo(n) => code_gen::add(&mut bytes, n),
                 AstNode::SubFrom(n) => code_gen::sub(&mut bytes, n),
+                AstNode::MultiplyAddTo(offset, factor) => {
+                    code_gen::multiply_add(&mut bytes, offset, factor)
+                }
+                AstNode::CopyTo(offsets) => code_gen::copy_to(&mut bytes, offsets),
                 AstNode::Loop(nodes) if nodes.len() < INLINE_THRESHOLD => {
                     bytes.extend(Self::compile_loop(nodes, context.clone()))
                 }
