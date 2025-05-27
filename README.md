@@ -6,11 +6,12 @@ BF Just-in-Time Compiler
 A very over-engineered [BrainFuck](https://en.wikipedia.org/wiki/Brainfuck) interpreter/optimizing JIT compiler written in
 rust. Done from first-principles without any research or examination of prior art.
 
-## Supported Architectures
+## Supports
 
-The JIT compiler supports the following architectures:
-- x86-64 (Linux and MacOS)
-- AArch64 (Linux and MacOS)
+- Linux x86-64
+- Linux aarch64
+- MacOS x86-64
+- MacOS aarch64
 
 ## Usage
 
@@ -43,74 +44,173 @@ pointer. There are only 8 single character commands:
 
 ## Implementation
 
-### Optimization
+### Parser and AST
 
-The lowest hanging fruit here is to perform run-length encoding on the
-instructions. Sequential `+`, `-`, `>` and `<` commands can be combined before
-they are executed. Internally this is done by compiling to an intermediate
-language - which is stored as a vector of `Instr`s:
+The compiler first parses BrainFuck source code into an Abstract Syntax Tree (AST) representation. This intermediate representation enables optimizations before execution:
 
 ```rust
-pub struct Program {
-    pub data: Vec<Instr>,
-}
-
-pub enum Instr {
-    Incr(u8),
-    Decr(u8),
-    Next(usize),
-    Prev(usize),
-    Print,
-    Read,
-    BeginLoop(usize),
-    EndLoop(usize),
+#[derive(Debug, Clone, PartialEq)]
+pub enum AstNode {
+    Incr(u8),      // Add to current cell
+    Decr(u8),      // Subtract from current cell
+    Next(usize),   // Move data pointer right
+    Prev(usize),   // Move data pointer left
+    Print,         // Output current cell as ASCII
+    Read,          // Read ASCII input to current cell
+    Set(u8),       // Set current cell to literal value
+    AddTo(isize),  // Add current cell to offset cell, zero current
+    SubFrom(isize),// Subtract current cell from offset cell, zero current
+    Loop(VecDeque<AstNode>), // Loop while current cell != 0
 }
 ```
 
-Without any other optimizations performed (unless you count stripping out
-comments before execution) this alone results in a ~3x speedup when benchmarked
-against a BrainFuck Mandelbrot set renderer.
+### Optimization Techniques
 
-What's next? The more complicated BrainFuck programs are generated from a high
-level macro language. Decompiling from BrainFuck back to this language could
-allow me to do more intelligent code execution.
+The compiler implements several optimization passes during AST construction:
 
-### JIT Compiling
+#### 1. Run-Length Encoding
+Sequential identical operations are combined into single instructions with counts:
+- `++++` becomes `Incr(4)`
+- `>>>>` becomes `Next(4)`
+- `----` becomes `Decr(4)`
+- `<<<<` becomes `Prev(4)`
 
-While impossible to read BrainFuck code itself, BrainFuck is probably the
-simplest turing-complete language. This makes it an ideal candidate for
-exploring JIT compilation.
+This optimization alone provides approximately 3x speedup on typical BrainFuck programs.
 
-The first six of our instructions defined in `Instr` are pretty straitforward to
-implement in x86-64 or AArch64.
+#### 2. Loop Pattern Recognition
+Common BrainFuck idioms are detected and replaced with optimized operations:
 
----
+**Zero loops**: `[-]` or `[+]` → `Set(0)`
+- Replaces loops that simply zero the current cell
 
-`+` (x86-64):
+**Move loops**: `[-<+>]` → `AddTo(-1)`
+- Detects patterns that move the current cell's value to another location
+- Supports both addition (`AddTo`) and subtraction (`SubFrom`) variants
+- Works with arbitrary offsets in either direction
 
+#### 3. Constant Folding
+Operations on literal values are computed at compile time:
+- `Set(5)` followed by `Incr(3)` becomes `Set(8)`
+
+### Execution Backends
+
+The compiler supports two execution modes:
+
+#### Interpreter Backend
+A traditional bytecode interpreter that executes the optimized AST directly. This provides:
+- Guaranteed compatibility across all architectures
+- Fallback when JIT compilation is unavailable
+
+The interpreter uses a simple virtual machine with:
+- 30,000+ cell memory array (dynamically expandable)
+- Program counter and data pointer
+- Stack-based loop handling with pre-computed jump offsets
+
+#### JIT Compiler Backend
+A Just-In-Time compiler that generates native machine code for maximum performance.
+
+**Supported Architectures:**
+- x86-64
+- AArch64
+
+**JIT Compilation Strategy:**
+The JIT uses a hybrid approach combining Ahead-of-Time (AOT) and Just-in-Time compilation:
+
+1. **Small loops** (< 22 instructions): Compiled immediately (AOT)
+2. **Large loops**: Deferred compilation using a promise system
+3. **Hot code paths**: Compiled on first execution, cached for subsequent runs
+
+**Code Generation:**
+- Direct assembly generation without external assemblers
+- Register allocation optimized for BrainFuck's memory model:
+  - `r10`/`x19`: Data pointer register
+  - `r11`/`x20`: JIT context pointer
+  - `r12`/`x21`: Virtual function table pointer
+- Efficient calling conventions for I/O operations
+- Proper stack frame management and callee-saved register preservation
+
+**Assembly Code Examples:**
+
+The JIT compiler generates native assembly for each BrainFuck operation:
+
+*Increment (`++++` → `Incr(4)`):*
 ```asm
-add    BYTE PTR [r10],n
-```
+; x86-64
+add    BYTE PTR [r10], 4
 
-`+` (AArch64):
-
-```asm
+; AArch64
 ldrb   w8, [x19]
-add    w8, w8, #n
+add    w8, w8, #4
 strb   w8, [x19]
 ```
 
-Where:
+*Pointer movement (`>>>>` → `Next(4)`):*
+```asm
+; x86-64
+add    r10, 4
 
-* `r10` (x86-64) or `x19` (AArch64) is used as the data pointer
-* `n` is the same value that is held by `Incr` in the `Instr` enum
+; AArch64
+add    x19, x19, #4
+```
 
-`-`, `>` and `<` are equally simple.
+*Cell zeroing (`[-]` → `Set(0)`):*
+```asm
+; x86-64
+mov    BYTE PTR [r10], 0
 
----
+; AArch64
+mov    w8, #0
+strb   w8, [x19]
+```
 
-`Print` and `Read` are slightly more complex but don't require us to do any
-control flow ourselves.
+*Move operation (`[-<+>]` → `AddTo(-1)`):*
+```asm
+; x86-64
+movzx  eax, BYTE PTR [r10]    ; Load current cell
+add    BYTE PTR [r10-1], al   ; Add to target cell
+mov    BYTE PTR [r10], 0      ; Zero current cell
+
+; AArch64
+ldrb   w8, [x19]              ; Load current cell
+ldrb   w9, [x19, #-1]         ; Load target cell
+add    w9, w9, w8             ; Add values
+strb   w9, [x19, #-1]         ; Store to target
+mov    w8, #0                 ; Zero current cell
+strb   w8, [x19]
+```
+
+**Memory Management:**
+- Executable memory pages allocated with proper permissions
+- Automatic cleanup of compiled code fragments
+- Promise-based deferred compilation for memory efficiency
+
+### Control Flow Handling
+
+**Loops** are the most complex aspect of BrainFuck compilation:
+
+- **AOT loops**: Small loops are compiled inline with conditional jumps
+- **JIT loops**: Large loops use a callback mechanism:
+  1. First execution triggers compilation via callback
+  2. Compiled code is cached in a promise table
+  3. Subsequent executions call the cached native code directly
+
+**Jump Resolution:**
+- Forward jumps (`[`) use conditional branches that skip the loop body
+- Backward jumps (`]`) use conditional branches that return to loop start
+- Jump distances are computed during compilation for optimal instruction selection
+
+### I/O System
+
+Both backends use an I/O system supporting:
+- Standard input/output (default)
+- Custom readers/writers for testing
+- Proper error handling for EOF conditions
+- UTF-8/ASCII character handling
+
+The JIT compiler implements I/O through a virtual function table, allowing:
+- Efficient native code calls to Rust I/O functions
+- Consistent behavior between interpreter and JIT modes
+- Easy testing with mock I/O streams
 
 ## Benchmarks
 
