@@ -33,7 +33,7 @@ provides the programmer with an a 30,000 cell array of unsigned bytes and a data
 pointer. There are only 8 single character commands:
 
 * `+` : Increment the current memory cell by 1 (with wrapping overflow)
-* `-` : Decrememt the current memory cell by 1 (with wrapping underflow)
+* `-` : Decrement the current memory cell by 1 (with wrapping underflow)
 * `>` : Shift the data pointer to the next memory cell
 * `<` : Shift the data pointer to the previous memory cell
 * `.` : Output the current memory cell as an ASCII character
