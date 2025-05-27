@@ -4,7 +4,7 @@ use libc::{sysconf, _SC_PAGESIZE};
 
 // macos needs an extra flag
 #[cfg(target_os = "macos")]
-const MMAP_FLAGS: i32 = libc::MAP_ANON | libc::MAP_PRIVATE | /* MAP_JIT */ 0x0800;
+const MMAP_FLAGS: i32 = libc::MAP_ANON | libc::MAP_PRIVATE | libc::MAP_JIT;
 #[cfg(target_os = "linux")]
 const MMAP_FLAGS: i32 = libc::MAP_ANON | libc::MAP_PRIVATE;
 
@@ -47,11 +47,11 @@ impl ExecutableMemory {
             panic!("Failed to make memory executable: {}", std::io::Error::last_os_error());
         }
 
-        return Self {
+        Self {
             ptr: buffer_ptr,
             len: source.len(),
             capacity: buffer_size_bytes,
-        };
+        }
     }
 
     pub fn as_ptr(&self) -> *const u8 {
