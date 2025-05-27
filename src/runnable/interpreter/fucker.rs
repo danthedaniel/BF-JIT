@@ -193,7 +193,7 @@ mod tests {
 
     #[test]
     fn run_hello_world() {
-        let ast = Ast::parse(include_str!("../../../test/programs/hello_world.bf")).unwrap();
+        let ast = Ast::parse(include_str!("../../../tests/programs/hello_world.bf")).unwrap();
         let mut fucker = Fucker::new(ast.data);
         let shared_buffer = SharedBuffer::new();
         fucker.io_write = Box::new(shared_buffer.clone());
@@ -208,7 +208,7 @@ mod tests {
     fn run_rot13() {
         // This rot13 program terminates after 16 characters so we can test it. Otherwise it would
         // wait on input forever.
-        let ast = Ast::parse(include_str!("../../../test/programs/rot13-16char.bf")).unwrap();
+        let ast = Ast::parse(include_str!("../../../tests/programs/rot13-16char.bf")).unwrap();
         let mut fucker = Fucker::new(ast.data);
         let shared_buffer = SharedBuffer::new();
         fucker.io_write = Box::new(shared_buffer.clone());

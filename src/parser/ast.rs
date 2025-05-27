@@ -241,13 +241,13 @@ mod tests {
 
     #[test]
     fn parses_rot13() {
-        let ast = Ast::parse(include_str!("../../test/programs/rot13-16char.bf"));
+        let ast = Ast::parse(include_str!("../../tests/programs/rot13-16char.bf"));
         assert!(ast.is_ok());
     }
 
     #[test]
     fn parses_mandelbrot() {
-        let ast = Ast::parse(include_str!("../../test/programs/mandelbrot.bf"));
+        let ast = Ast::parse(include_str!("../../tests/programs/mandelbrot.bf"));
         assert!(ast.is_ok());
     }
 }

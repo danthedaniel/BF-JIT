@@ -222,7 +222,7 @@ mod tests {
 
     #[test]
     fn run_hello_world() {
-        let ast = Ast::parse(include_str!("../../../test/programs/hello_world.bf")).unwrap();
+        let ast = Ast::parse(include_str!("../../../tests/programs/hello_world.bf")).unwrap();
         let mut jit_target = JITTarget::new(ast.data);
         let shared_buffer = SharedBuffer::new();
         jit_target.context.borrow_mut().io_write = Box::new(shared_buffer.clone());
@@ -235,7 +235,7 @@ mod tests {
 
     #[test]
     fn run_mandelbrot() {
-        let ast = Ast::parse(include_str!("../../../test/programs/mandelbrot.bf")).unwrap();
+        let ast = Ast::parse(include_str!("../../../tests/programs/mandelbrot.bf")).unwrap();
         let mut jit_target = JITTarget::new(ast.data);
         let shared_buffer = SharedBuffer::new();
         jit_target.context.borrow_mut().io_write = Box::new(shared_buffer.clone());
@@ -243,7 +243,7 @@ mod tests {
         jit_target.run();
 
         let output_string = shared_buffer.get_string_content();
-        let expected_output = include_str!("../../../test/programs/mandelbrot.out");
+        let expected_output = include_str!("../../../tests/programs/mandelbrot.out");
         assert_eq!(output_string, expected_output);
     }
 
@@ -251,7 +251,7 @@ mod tests {
     fn run_rot13() {
         // This rot13 program terminates after 16 characters so we can test it. Otherwise it would
         // wait on input forever.
-        let ast = Ast::parse(include_str!("../../../test/programs/rot13-16char.bf")).unwrap();
+        let ast = Ast::parse(include_str!("../../../tests/programs/rot13-16char.bf")).unwrap();
         let mut jit_target = JITTarget::new(ast.data);
         let shared_buffer = SharedBuffer::new();
         jit_target.context.borrow_mut().io_write = Box::new(shared_buffer.clone());
