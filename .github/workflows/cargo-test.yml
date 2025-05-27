@@ -11,10 +11,20 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        target: [i686-unknown-linux-gnu, x86_64-unknown-linux-gnu]
+        include:
+          - os: ubuntu-24.04
+            target: i686-unknown-linux-gnu
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - os: macos-13
+            target: x86_64-apple-darwin
+          - os: macos-15
+            target: aarch64-apple-darwin
 
     steps:
       - uses: actions/checkout@v2
@@ -27,7 +37,10 @@ jobs:
           target: ${{ matrix.target }}
 
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y gcc-multilib
+        run: |
+          if [[ "${{ matrix.os }}" == ubuntu* ]]; then
+            sudo apt-get update && sudo apt-get install -y gcc-multilib
+          fi
 
       - name: Check
         uses: actions-rs/cargo@v1

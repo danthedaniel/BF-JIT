@@ -1,6 +1,5 @@
 mod code_gen;
-mod immutable;
-mod jit_helpers;
+mod executable_memory;
 mod jit_promise;
 mod jit_target;
 

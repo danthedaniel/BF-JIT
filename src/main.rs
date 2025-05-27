@@ -15,7 +15,7 @@ use docopt::Docopt;
 
 use parser::Ast;
 use runnable::interpreter::Fucker;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 use runnable::jit::JITTarget;
 use runnable::Runnable;
 
@@ -61,12 +61,12 @@ fn main() {
     let mut runnable: Box<dyn Runnable> = if args.flag_int {
         Box::new(Fucker::new(program.data))
     } else {
-        #[cfg(not(target_arch = "x86_64"))]
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
         {
             eprintln!("JIT is not supported for this architecture");
             exit(1);
         }
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
         Box::new(JITTarget::new(program.data))
     };
 

@@ -6,6 +6,12 @@ BF Just-in-Time Compiler
 A very over-engineered [BrainFuck](https://en.wikipedia.org/wiki/Brainfuck) interpreter/optimizing JIT compiler written in
 rust. Done from first-principles without any research or examination of prior art.
 
+## Supported Architectures
+
+The JIT compiler supports the following architectures:
+- x86-64 (AMD64)
+- AArch64
+
 ## Usage
 
 ```
@@ -76,19 +82,27 @@ simplest turing-complete language. This makes it an ideal candidate for
 exploring JIT compilation.
 
 The first six of our instructions defined in `Instr` are pretty straitforward to
-implement in x86-64.
+implement in x86-64 or AArch64.
 
 ---
 
-`+`:
+`+` (x86-64):
 
 ```asm
 add    BYTE PTR [r10],n
 ```
 
+`+` (AArch64):
+
+```asm
+ldrb   w8, [x19]
+add    w8, w8, #n
+strb   w8, [x19]
+```
+
 Where:
 
-* `r10` is used as the data pointer
+* `r10` (x86-64) or `x19` (AArch64) is used as the data pointer
 * `n` is the same value that is held by `Incr` in the `Instr` enum
 
 `-`, `>` and `<` are equally simple.

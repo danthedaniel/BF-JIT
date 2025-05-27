@@ -1,7 +1,6 @@
 use super::super::Runnable;
 use super::code_gen;
-use super::immutable::Immutable;
-use super::jit_helpers::make_executable;
+use super::executable_memory::ExecutableMemory;
 use super::jit_promise::{JITPromise, JITPromiseID, PromiseSet};
 use crate::parser::AstNode;
 use crate::runnable::BF_MEMORY_SIZE;
@@ -42,7 +41,7 @@ pub struct JITTarget {
     /// Original AST
     pub source: VecDeque<AstNode>,
     /// Executable bytes buffer
-    bytes: Immutable<Vec<u8>>,
+    bytes: ExecutableMemory,
     /// Globals for the whole program
     pub context: Rc<RefCell<JITContext>>,
 }
@@ -74,7 +73,7 @@ impl JITTarget {
 
         Self {
             source: nodes,
-            bytes: make_executable(&bytes),
+            bytes: ExecutableMemory::new(&bytes),
             context,
         }
     }
@@ -89,7 +88,7 @@ impl JITTarget {
 
         Self {
             source: nodes,
-            bytes: make_executable(&bytes),
+            bytes: ExecutableMemory::new(&bytes),
             context,
         }
     }
