@@ -9,8 +9,8 @@ rust. Done from first-principles without any research or examination of prior ar
 ## Supported Architectures
 
 The JIT compiler supports the following architectures:
-- x86-64 (AMD64)
-- AArch64
+- x86-64 (Linux and MacOS)
+- AArch64 (Linux and MacOS)
 
 ## Usage
 
