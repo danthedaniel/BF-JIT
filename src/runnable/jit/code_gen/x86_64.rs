@@ -390,14 +390,14 @@ pub fn jit_loop(bytes: &mut Vec<u8>, loop_id: JITPromiseID) {
     // movabs rsi,index
     bytes.push(0x48);
     bytes.push(0xbe);
-    bytes.push(loop_index_bytes[0]);
-    bytes.push(loop_index_bytes[1]);
-    bytes.push(loop_index_bytes[2]);
-    bytes.push(loop_index_bytes[3]);
-    bytes.push(loop_index_bytes[4]);
-    bytes.push(loop_index_bytes[5]);
-    bytes.push(loop_index_bytes[6]);
-    bytes.push(loop_index_bytes[7]);
+    bytes.push(loop_id_bytes[0]);
+    bytes.push(loop_id_bytes[1]);
+    bytes.push(loop_id_bytes[2]);
+    bytes.push(loop_id_bytes[3]);
+    bytes.push(loop_id_bytes[4]);
+    bytes.push(loop_id_bytes[5]);
+    bytes.push(loop_id_bytes[6]);
+    bytes.push(loop_id_bytes[7]);
 
     // Move data pointer into the third argument
     // mov rdx,r10

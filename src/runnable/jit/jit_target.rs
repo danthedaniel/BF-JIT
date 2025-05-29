@@ -41,7 +41,7 @@ pub struct JITTarget {
     /// Original AST
     pub source: VecDeque<AstNode>,
     /// Executable bytes buffer
-    bytes: ExecutableMemory,
+    executable: ExecutableMemory,
     /// Globals for the whole program
     pub context: Rc<RefCell<JITContext>>,
 }
@@ -50,7 +50,7 @@ impl fmt::Debug for JITTarget {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("JITTarget")
             .field("source", &self.source)
-            .field("bytes", &self.bytes)
+            .field("executable", &self.executable)
             .field("promises", &self.context.borrow().promises)
             .finish()
     }
@@ -73,7 +73,7 @@ impl JITTarget {
 
         Self {
             source: nodes,
-            bytes: ExecutableMemory::new(&bytes),
+            executable: ExecutableMemory::new(&bytes),
             context,
         }
     }
@@ -88,7 +88,7 @@ impl JITTarget {
 
         Self {
             source: nodes,
-            bytes: ExecutableMemory::new(&bytes),
+            executable: ExecutableMemory::new(&bytes),
             context,
         }
     }
@@ -202,7 +202,7 @@ impl JITTarget {
         ];
 
         type JitFunc = extern "C" fn(*mut u8, &mut JITTarget, &VTable<3>) -> *mut u8;
-        let func: JitFunc = unsafe { mem::transmute(self.bytes.as_ptr()) };
+        let func: JitFunc = unsafe { mem::transmute(self.executable.as_ptr()) };
 
         func(mem_ptr, self, &vtable)
     }
