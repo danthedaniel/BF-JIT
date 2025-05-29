@@ -4,7 +4,14 @@ use std::ops::{Deref, DerefMut};
 use super::JITTarget;
 use crate::parser::AstNode;
 
-pub type JITPromiseID = usize;
+#[repr(C)]
+pub struct JITPromiseID(usize);
+
+impl JITPromiseID {
+    pub fn value(&self) -> usize {
+        return self.0;
+    }
+}
 
 /// Holds AstNodes for later compilation.
 #[derive(Debug)]
@@ -33,7 +40,7 @@ impl PromiseSet {
         for (index, promise) in self.iter().enumerate() {
             if let Some(promise) = promise {
                 if promise.source() == &nodes {
-                    return index;
+                    return JITPromiseID(index);
                 }
             }
             // It's possible for `promise` to be None here. If the call stack
@@ -55,7 +62,7 @@ impl PromiseSet {
         // If this is a new promise, add it to the pool.
         self.push(Some(JITPromise::Deferred(nodes)));
 
-        self.len() - 1
+        JITPromiseID(self.len() - 1)
     }
 }
 

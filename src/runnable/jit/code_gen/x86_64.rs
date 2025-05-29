@@ -367,7 +367,7 @@ pub fn aot_loop(bytes: &mut Vec<u8>, inner_loop_bytes: Vec<u8>) {
     bytes.push(offset_bytes[3]);
 }
 
-pub fn jit_loop(bytes: &mut Vec<u8>, loop_index: JITPromiseID) {
+pub fn jit_loop(bytes: &mut Vec<u8>, loop_id: JITPromiseID) {
     // Push JITTarget pointer onto stack
     // push   r11
     bytes.push(0x41);
@@ -384,7 +384,7 @@ pub fn jit_loop(bytes: &mut Vec<u8>, loop_index: JITPromiseID) {
     bytes.push(0x89);
     bytes.push(0xdf);
 
-    let loop_index_bytes = loop_index.to_ne_bytes();
+    let loop_id_bytes = loop_id.value().to_ne_bytes();
 
     // Move target index into the second argument
     // movabs rsi,index

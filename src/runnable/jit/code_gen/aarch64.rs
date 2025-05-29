@@ -398,7 +398,7 @@ pub fn aot_loop(bytes: &mut Vec<u8>, inner_loop_bytes: Vec<u8>) {
     // end_label:
 }
 
-pub fn jit_loop(bytes: &mut Vec<u8>, loop_index: JITPromiseID) {
+pub fn jit_loop(bytes: &mut Vec<u8>, loop_id: JITPromiseID) {
     // Save x20 and x21 on stack
     // stp x20, x21, [sp, #-16]!
     emit_u32(bytes, 0xa9bf57f4);
@@ -408,27 +408,24 @@ pub fn jit_loop(bytes: &mut Vec<u8>, loop_index: JITPromiseID) {
     emit_u32(bytes, 0xaa1403e0);
 
     // Move target index into the second argument
-    let loop_index_u64 = loop_index as u64;
+    let loop_id_u64 = loop_id.value() as u64;
 
     // movz x1, #(loop_index & 0xFFFF)
-    emit_u32(
-        bytes,
-        0xd2800001 | (((loop_index_u64 & 0xFFFF) as u32) << 5),
-    );
+    emit_u32(bytes, 0xd2800001 | (((loop_id_u64 & 0xFFFF) as u32) << 5));
 
-    if loop_index_u64 > 0xFFFF {
+    if loop_id_u64 > 0xFFFF {
         // movk x1, #((loop_index >> 16) & 0xFFFF), lsl #16
         emit_u32(
             bytes,
-            0xf2a00001 | ((((loop_index_u64 >> 16) & 0xFFFF) as u32) << 5),
+            0xf2a00001 | ((((loop_id_u64 >> 16) & 0xFFFF) as u32) << 5),
         );
     }
 
-    if loop_index_u64 > 0xFFFFFFFF {
+    if loop_id_u64 > 0xFFFFFFFF {
         // movk x1, #((loop_index >> 32) & 0xFFFF), lsl #32
         emit_u32(
             bytes,
-            0xf2c00001 | ((((loop_index_u64 >> 32) & 0xFFFF) as u32) << 5),
+            0xf2c00001 | ((((loop_id_u64 >> 32) & 0xFFFF) as u32) << 5),
         );
     }
 

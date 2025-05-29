@@ -143,7 +143,7 @@ impl JITTarget {
     /// Callback passed into compiled code. Allows for deferred compilation
     /// targets to be compiled, ran, and later re-ran.
     extern "C" fn jit_callback(&mut self, promise_id: JITPromiseID, mem_ptr: *mut u8) -> *mut u8 {
-        let mut promise = self.context.borrow_mut().promises[promise_id]
+        let mut promise = self.context.borrow_mut().promises[promise_id.value()]
             .take()
             .expect("Someone forgot to put a promise back");
         let return_ptr;
@@ -161,7 +161,7 @@ impl JITTarget {
             }
         };
 
-        self.context.borrow_mut().promises[promise_id] = new_promise;
+        self.context.borrow_mut().promises[promise_id.value()] = new_promise;
 
         return_ptr
     }
