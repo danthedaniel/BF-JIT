@@ -2,11 +2,26 @@ use std::process::{Command, Stdio};
 use std::io::Write;
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::Once;
+
+static INIT: Once = Once::new();
 
 /// Helper function to run the fucker binary with given arguments
 fn run_fucker(args: &[&str]) -> std::process::Output {
-    Command::new("cargo")
-        .args(&["run", "--"])
+    INIT.call_once(|| {
+        let output =
+            Command::new("cargo")
+                .args(["build"])
+                .output()
+                .expect("Failed to build fucker binary");
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            eprint!("{}", stderr);
+            panic!("Failed to build binary");
+        }
+    });
+
+    Command::new("target/debug/fucker")
         .args(args)
         .output()
         .expect("Failed to execute fucker binary")
@@ -15,7 +30,7 @@ fn run_fucker(args: &[&str]) -> std::process::Output {
 /// Helper function to run the fucker binary with stdin input
 fn run_fucker_with_input(args: &[&str], input: &str) -> std::process::Output {
     let mut child = Command::new("cargo")
-        .args(&["run", "--"])
+        .args(["run", "--"])
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -61,7 +76,16 @@ fn test_help_flag_short() {
 }
 
 #[test]
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(not(feature = "jit"))]
+fn test_jit_not_supported() {
+    let output = run_fucker(&["tests/programs/hello_world.bf"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(stderr, "JIT is not supported for this architecture\n");
+}
+
+#[test]
+#[cfg(feature = "jit")]
 fn test_hello_world_program() {
     let output = run_fucker(&["tests/programs/hello_world.bf"]);
     assert!(output.status.success());
@@ -78,27 +102,6 @@ fn test_hello_world_with_interpreter_flag() {
 }
 
 #[test]
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-fn test_debug_flag() {
-    let output = run_fucker(&["--debug", "tests/programs/hello_world.bf"]);
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    // Debug output should contain AST representation
-    assert!(stdout.contains("Ast"));
-}
-
-#[test]
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-fn test_debug_flag_short() {
-    let output = run_fucker(&["-d", "tests/programs/hello_world.bf"]);
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    // Debug output should contain AST representation
-    assert!(stdout.contains("Ast"));
-}
-
-#[test]
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 fn test_nonexistent_file() {
     let output = run_fucker(&["nonexistent_file.bf"]);
     assert!(!output.status.success());
@@ -108,7 +111,7 @@ fn test_nonexistent_file() {
 }
 
 #[test]
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(feature = "jit")]
 fn test_invalid_syntax() {
     let temp_file = create_temp_program("++[+");  // Unmatched bracket
     let output = run_fucker(&[&temp_file]);
@@ -119,7 +122,7 @@ fn test_invalid_syntax() {
 }
 
 #[test]
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(feature = "jit")]
 fn test_empty_program() {
     let temp_file = create_temp_program("");
     let output = run_fucker(&[&temp_file]);
@@ -141,7 +144,7 @@ fn test_simple_output_program_interpreter() {
 }
 
 #[test]
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(feature = "jit")]
 fn test_stdin_input() {
     let output = run_fucker(&["-"]);
     assert!(output.status.success());
@@ -161,7 +164,7 @@ fn test_stdin_with_program_interpreter() {
 }
 
 #[test]
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(feature = "jit")]
 fn test_rot13_program_with_input() {
     // Test the rot13 program with a simple input
     let input = "Hello";
@@ -173,7 +176,7 @@ fn test_rot13_program_with_input() {
 }
 
 #[test]
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(feature = "jit")]
 fn test_interpreter_vs_jit_consistency() {
     // Test that interpreter and JIT produce the same output
     let jit_output = run_fucker(&["tests/programs/hello_world.bf"]);
@@ -188,7 +191,6 @@ fn test_interpreter_vs_jit_consistency() {
 fn test_no_arguments() {
     let output = run_fucker(&[]);
     assert!(!output.status.success());
-    // Should show usage information when no arguments provided
 }
 
 #[test]
@@ -199,8 +201,8 @@ fn test_invalid_flag() {
 
 #[test]
 fn test_multiple_flags_not_allowed() {
-    // Test that combining debug and interpreter flags is not allowed
-    let output = run_fucker(&["--debug", "--int", "tests/programs/hello_world.bf"]);
+    // Test that combining ast and interpreter flags is not allowed
+    let output = run_fucker(&["--ast", "--int", "tests/programs/hello_world.bf"]);
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("Invalid arguments"));
@@ -223,12 +225,11 @@ fn test_program_with_comments() {
 }
 
 #[test]
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(feature = "jit")]
 fn test_large_program() {
     // Test with the mandelbrot program to ensure it can handle larger programs
     let output = run_fucker(&["tests/programs/mandelbrot.bf"]);
     assert!(output.status.success());
-    // Just check that it runs without error, output verification would be complex
 }
 
 #[test]
@@ -245,12 +246,11 @@ fn test_program_with_input_output_interpreter() {
 }
 
 #[test]
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 fn test_debug_shows_ast_structure() {
-    // Test that debug mode shows the AST structure
+    // Test that ast flag shows the AST structure
     let simple_program = "+++.";
     let temp_file = create_temp_program(simple_program);
-    let output = run_fucker(&["--debug", &temp_file]);
+    let output = run_fucker(&["--ast", &temp_file]);
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     // Should contain AST structure elements
@@ -271,7 +271,7 @@ fn test_interpreter_flag_with_simple_program() {
 }
 
 #[test]
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(feature = "jit")]
 fn test_error_message_format() {
     // Test that error messages are properly formatted
     let output = run_fucker(&["nonexistent.bf"]);
@@ -281,7 +281,7 @@ fn test_error_message_format() {
 }
 
 #[test]
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(feature = "jit")]
 fn test_bracket_mismatch_error() {
     // Test specific error for bracket mismatch
     let temp_file = create_temp_program("++[++");

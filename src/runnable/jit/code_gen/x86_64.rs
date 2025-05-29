@@ -1,9 +1,10 @@
 use std::convert::TryInto;
 
-use super::super::jit_promise::JITPromiseID;
-use super::super::jit_target::VTableEntry;
+use crate::runnable::jit::jit_promise::JITPromiseID;
+use crate::runnable::jit::jit_target::VTableEntry;
 
-const PTR_BYTES: u8 = 8;
+pub const RET_BYTES: [u8; 1] = [0xc3];
+const PTR_SIZE: u8 = 8;
 
 fn callee_save_to_stack(bytes: &mut Vec<u8>) {
     // push   rbx
@@ -70,7 +71,7 @@ pub fn wrapper(bytes: &mut Vec<u8>, content: Vec<u8>) {
     callee_restore_from_stack(bytes);
 
     // ret
-    bytes.push(0xc3);
+    bytes.extend_from_slice(&RET_BYTES);
 }
 
 fn callee_restore_from_stack(bytes: &mut Vec<u8>) {
@@ -192,7 +193,7 @@ fn call_vtable_entry(bytes: &mut Vec<u8>, entry: VTableEntry) {
     bytes.push(0xff);
     bytes.push(0x54);
     bytes.push(0x24);
-    bytes.push((entry as u8) * PTR_BYTES);
+    bytes.push((entry as u8) * PTR_SIZE);
 }
 
 pub fn print(bytes: &mut Vec<u8>) {

@@ -2,13 +2,12 @@ use std::cmp;
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 
-use super::super::Runnable;
 use super::instr::Instr;
 use crate::parser::AstNode;
-use crate::runnable::BF_MEMORY_SIZE;
+use crate::runnable::{BF_MEMORY_SIZE, Runnable};
 
 /// BrainFuck virtual machine
-pub struct Fucker {
+pub struct Interpreter {
     program: Vec<Instr>,
     memory: Vec<u8>,
     /// Program counter
@@ -21,9 +20,9 @@ pub struct Fucker {
     io_write: Box<dyn Write>,
 }
 
-impl Fucker {
+impl Interpreter {
     pub fn new(nodes: VecDeque<AstNode>) -> Self {
-        Fucker {
+        Interpreter {
             program: Self::compile(nodes),
             memory: vec![0u8; BF_MEMORY_SIZE],
             pc: 0,
@@ -169,6 +168,7 @@ impl Fucker {
                     self.memory[self.dp] = 0;
                 }
             }
+            // TODO: Examine poor performance with CopyTo only seen in interpreter
             Instr::CopyTo(offsets) => {
                 if self.memory[self.dp] != 0 {
                     let value = self.memory[self.dp];
@@ -215,7 +215,7 @@ impl Fucker {
     }
 }
 
-impl Runnable for Fucker {
+impl Runnable for Interpreter {
     fn run(&mut self) {
         while self.step() {}
         self.reset();
@@ -232,7 +232,7 @@ mod tests {
     #[test]
     fn run_hello_world() {
         let ast = Ast::parse(include_str!("../../../tests/programs/hello_world.bf")).unwrap();
-        let mut fucker = Fucker::new(ast.data);
+        let mut fucker = Interpreter::new(ast.data);
         let shared_buffer = SharedBuffer::new();
         fucker.io_write = Box::new(shared_buffer.clone());
 
@@ -247,7 +247,7 @@ mod tests {
         // This rot13 program terminates after 16 characters so we can test it. Otherwise it would
         // wait on input forever.
         let ast = Ast::parse(include_str!("../../../tests/programs/rot13-16char.bf")).unwrap();
-        let mut fucker = Fucker::new(ast.data);
+        let mut fucker = Interpreter::new(ast.data);
         let shared_buffer = SharedBuffer::new();
         fucker.io_write = Box::new(shared_buffer.clone());
         let in_cursor = Box::new(Cursor::new("Hello World! 123".as_bytes().to_vec()));

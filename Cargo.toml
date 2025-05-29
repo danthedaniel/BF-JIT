@@ -9,6 +9,9 @@ description = "BrainFuck interpreter and optimizing JIT compiler "
 readme = "README.md"
 license = "MIT"
 
+[features]
+jit = []
+
 [dependencies]
 libc = "0.2.172"
 docopt = "1.1.1"

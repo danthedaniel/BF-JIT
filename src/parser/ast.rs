@@ -157,47 +157,23 @@ impl Ast {
         }
 
         // Check for copy loops (e.g., [->>+>+<<<])
-        if Self::is_copy_loop(input) {
-            if let Some(copy_node) = Self::create_copy_node(input) {
-                return Some(copy_node);
-            }
+        if let Some(copy_node) = Self::create_copy_node(input) {
+            return Some(copy_node);
         }
 
         None
     }
 
-    /// Check if the loop is a copy loop pattern
-    fn is_copy_loop(input: &VecDeque<AstNode>) -> bool {
-        if input.is_empty() || input[0] != AstNode::Decr(1) {
-            return false;
-        }
-
-        let mut position = 0isize;
-        let mut increments = std::collections::HashMap::new();
-
-        for node in input.iter().skip(1) {
-            match node {
-                AstNode::Next(n) => position += *n as isize,
-                AstNode::Prev(n) => position -= *n as isize,
-                AstNode::Incr(n) => {
-                    *increments.entry(position).or_insert(0) += *n as i32;
-                }
-                _ => return false,
-            }
-        }
-
-        // Must return to starting position
-        if position != 0 {
-            return false;
-        }
-
-        // All increments must be 1
-        increments.values().all(|&v| v == 1)
-    }
-
     /// Create a CopyTo node from a copy loop
     fn create_copy_node(input: &VecDeque<AstNode>) -> Option<AstNode> {
-        let mut position = 0isize;
+        if input.is_empty() {
+            return None;
+        }
+        if input[0] != AstNode::Decr(1) {
+            return None;
+        }
+
+        let mut position: isize = 0;
         let mut targets = Vec::new();
 
         for node in input.iter().skip(1) {
@@ -205,15 +181,19 @@ impl Ast {
                 AstNode::Next(n) => position += *n as isize,
                 AstNode::Prev(n) => position -= *n as isize,
                 AstNode::Incr(1) => targets.push(position),
-                _ => {}
+                _ => return None,
             }
         }
 
-        if !targets.is_empty() {
-            Some(AstNode::CopyTo(targets))
-        } else {
-            None
+        // Must return to starting position
+        if position != 0 {
+            return None;
         }
+        if targets.is_empty() {
+            return None;
+        }
+
+        Some(AstNode::CopyTo(targets))
     }
 
     /// Convert runs of instructions into bulk operations.
@@ -258,18 +238,10 @@ impl Ast {
                     continue;
                 }
                 // Partial cancellation
-                (Some(AstNode::Incr(a)), AstNode::Decr(b)) if *a > *b => {
-                    Some(AstNode::Incr(a - b))
-                }
-                (Some(AstNode::Incr(a)), AstNode::Decr(b)) if *a < *b => {
-                    Some(AstNode::Decr(b - a))
-                }
-                (Some(AstNode::Decr(a)), AstNode::Incr(b)) if *a > *b => {
-                    Some(AstNode::Decr(a - b))
-                }
-                (Some(AstNode::Decr(a)), AstNode::Incr(b)) if *a < *b => {
-                    Some(AstNode::Incr(b - a))
-                }
+                (Some(AstNode::Incr(a)), AstNode::Decr(b)) if *a > *b => Some(AstNode::Incr(a - b)),
+                (Some(AstNode::Incr(a)), AstNode::Decr(b)) if *a < *b => Some(AstNode::Decr(b - a)),
+                (Some(AstNode::Decr(a)), AstNode::Incr(b)) if *a > *b => Some(AstNode::Decr(a - b)),
+                (Some(AstNode::Decr(a)), AstNode::Incr(b)) if *a < *b => Some(AstNode::Incr(b - a)),
                 // Combine Incr or Decr with Set
                 (Some(AstNode::Set(a)), AstNode::Incr(b)) => Some(AstNode::Set(a.wrapping_add(*b))),
                 (Some(AstNode::Set(a)), AstNode::Decr(b)) => Some(AstNode::Set(a.wrapping_sub(*b))),

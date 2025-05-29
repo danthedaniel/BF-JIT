@@ -3,8 +3,9 @@ BF Just-in-Time Compiler
 
 [On crates.io](https://crates.io/crates/fucker)
 
-A very over-engineered [BrainFuck](https://en.wikipedia.org/wiki/Brainfuck) interpreter/optimizing JIT compiler written in
-rust. Done from first-principles without any research or examination of prior art\*.
+A very over-engineered [BrainFuck](https://en.wikipedia.org/wiki/Brainfuck)
+interpreter/optimizing JIT compiler written in rust. Done from first-principles
+without any research or examination of prior art\*.
 
 **\*Update**:
 The aarch64 implementation in `src/runnable/jit/code_gen/aarch64.rs` was written
@@ -52,7 +53,9 @@ pointer. There are only 8 single character commands:
 
 ### Parser and AST
 
-The compiler first parses BrainFuck source code into an Abstract Syntax Tree (AST) representation. This intermediate representation enables optimizations before execution:
+The compiler first parses BrainFuck source code into an Abstract Syntax Tree
+(AST) representation. This intermediate representation enables optimizations
+before execution:
 
 ```rust
 #[derive(Debug, Clone, PartialEq)]
@@ -77,13 +80,15 @@ pub enum AstNode {
 The compiler implements several optimization passes during AST construction:
 
 #### 1. Run-Length Encoding
-Sequential identical operations are combined into single instructions with counts:
+Sequential identical operations are combined into single instructions with
+counts:
 - `++++` becomes `Incr(4)`
 - `>>>>` becomes `Next(4)`
 - `----` becomes `Decr(4)`
 - `<<<<` becomes `Prev(4)`
 
-This optimization alone provides approximately 3x speedup on typical BrainFuck programs.
+This optimization alone provides an approximately 3x speedup on typical
+BrainFuck programs.
 
 #### 2. Loop Pattern Recognition
 Common BrainFuck idioms are detected and replaced with optimized operations:
@@ -105,7 +110,8 @@ Operations on literal values are computed at compile time:
 The compiler supports two execution modes:
 
 #### Interpreter Backend
-A traditional bytecode interpreter that executes the optimized AST directly. This provides:
+A traditional bytecode interpreter that executes the optimized AST directly.
+This provides:
 - Guaranteed compatibility across all architectures
 - Fallback when JIT compilation is unavailable
 
@@ -115,14 +121,16 @@ The interpreter uses a simple virtual machine with:
 - Stack-based loop handling with pre-computed jump offsets
 
 #### JIT Compiler Backend
-A Just-In-Time compiler that generates native machine code for maximum performance.
+A Just-In-Time compiler that generates native machine code for maximum
+performance.
 
 **Supported Architectures:**
 - x86-64
 - AArch64
 
 **JIT Compilation Strategy:**
-The JIT uses a hybrid approach combining Ahead-of-Time (AOT) and Just-in-Time compilation:
+The JIT uses a hybrid approach combining Ahead-of-Time (AOT) and Just-in-Time
+compilation:
 
 1. **Small loops** (< 22 instructions): Compiled immediately (AOT)
 2. **Large loops**: Deferred compilation using a promise system
@@ -205,7 +213,8 @@ strb   w8, [x19]
 **Jump Resolution:**
 - Forward jumps (`[`) use conditional branches that skip the loop body
 - Backward jumps (`]`) use conditional branches that return to loop start
-- Jump distances are computed during compilation for optimal instruction selection
+- Jump distances are computed during compilation for optimal instruction
+  selection
 
 ### I/O System
 
@@ -236,5 +245,5 @@ Ran on [mandelbrot.bf](https://github.com/erikdubbelboer/brainfuck-jit/blob/919d
 
 | Version | Runtime |
 |---|--:|
-| Optimized Interpreter | 4.35s |
-| Optimized JIT | 0.45s |
+| Optimized Interpreter | 8.18s |
+| Optimized JIT | 0.39s |

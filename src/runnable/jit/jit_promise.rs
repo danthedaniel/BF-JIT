@@ -1,11 +1,8 @@
-use std::{
-    collections::VecDeque,
-    ops::{Deref, DerefMut},
-};
-
-use crate::parser::AstNode;
+use std::collections::VecDeque;
+use std::ops::{Deref, DerefMut};
 
 use super::JITTarget;
+use crate::parser::AstNode;
 
 pub type JITPromiseID = usize;
 

@@ -1,6 +1,8 @@
+use libc::{_SC_PAGESIZE, sysconf};
 use std::ops::Deref;
 use std::sync::OnceLock;
-use libc::{sysconf, _SC_PAGESIZE};
+
+use super::code_gen::RET_BYTES;
 
 // macos needs an extra flag
 #[cfg(target_os = "macos")]
@@ -30,11 +32,7 @@ impl ExecutableMemory {
         let mprotect_result;
         unsafe {
             // Copy the source data
-            std::ptr::copy_nonoverlapping(
-                source.as_ptr(),
-                buffer_ptr,
-                source.len(),
-            );
+            std::ptr::copy_nonoverlapping(source.as_ptr(), buffer_ptr, source.len());
             // Make the memory executable
             mprotect_result = libc::mprotect(
                 buffer_ptr as *mut libc::c_void,
@@ -44,7 +42,10 @@ impl ExecutableMemory {
         }
 
         if mprotect_result != 0 {
-            panic!("Failed to make memory executable: {}", std::io::Error::last_os_error());
+            panic!(
+                "Failed to make memory executable: {}",
+                std::io::Error::last_os_error()
+            );
         }
 
         Self {
@@ -71,29 +72,21 @@ impl ExecutableMemory {
         };
 
         if ptr == libc::MAP_FAILED {
-            panic!("Failed to allocate JIT memory: {}", std::io::Error::last_os_error());
+            panic!(
+                "Failed to allocate JIT memory: {}",
+                std::io::Error::last_os_error()
+            );
         }
 
         ptr as *mut u8
     }
 
-    #[cfg(target_arch = "aarch64")]
     fn fill_with_ret(ptr: *mut u8, len: usize) {
-        let ret_instruction: u32 = 0xd65f03c0;
-        let buffer_as_u32 = ptr as *mut u32;
-        for i in 0..(len / 4) {
-            unsafe {
-                *buffer_as_u32.add(i) = ret_instruction;
-            }
-        }
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    fn fill_with_ret(ptr: *mut u8, len: usize) {
-        let ret_instruction: u8 = 0xc3;
-        for i in 0..len {
-            unsafe {
-                *ptr.add(i) = ret_instruction;
+        for word in 0..(len / RET_BYTES.len()) {
+            for (offset, byte) in RET_BYTES.iter().enumerate() {
+                unsafe {
+                    *ptr.add(word + offset) = *byte;
+                }
             }
         }
     }
@@ -114,7 +107,3 @@ impl Deref for ExecutableMemory {
         unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
     }
 }
-
-// Safety: ExecutableMemory owns its memory exclusively
-unsafe impl Send for ExecutableMemory {}
-unsafe impl Sync for ExecutableMemory {}

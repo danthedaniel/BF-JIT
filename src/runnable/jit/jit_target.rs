@@ -1,15 +1,15 @@
-use super::super::Runnable;
-use super::code_gen;
-use super::executable_memory::ExecutableMemory;
-use super::jit_promise::{JITPromise, JITPromiseID, PromiseSet};
-use crate::parser::AstNode;
-use crate::runnable::BF_MEMORY_SIZE;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::fmt;
 use std::io::{self, Read, Write};
 use std::mem;
 use std::rc::Rc;
+
+use super::code_gen;
+use super::executable_memory::ExecutableMemory;
+use super::jit_promise::{JITPromise, JITPromiseID, PromiseSet};
+use crate::parser::AstNode;
+use crate::runnable::{BF_MEMORY_SIZE, Runnable};
 
 /// Set arbitrarily
 const INLINE_THRESHOLD: usize = 0x16;
@@ -172,7 +172,7 @@ impl JITTarget {
         let write_result = self.context.borrow_mut().io_write.write_all(&buffer);
 
         if let Err(error) = write_result {
-            panic!("Failed to write to stdout: {}", error);
+            panic!("Failed to write to output: {}", error);
         }
     }
 
@@ -187,7 +187,7 @@ impl JITTarget {
                 return b'\n';
             }
 
-            panic!("Failed to read from stdin: {}", error);
+            panic!("Failed to read from input: {}", error);
         }
 
         buffer[0]

@@ -1,7 +1,8 @@
-use super::super::jit_promise::JITPromiseID;
-use super::super::jit_target::VTableEntry;
+use crate::runnable::jit::jit_promise::JITPromiseID;
+use crate::runnable::jit::jit_target::VTableEntry;
 
-const PTR_BYTES: u8 = 8;
+pub const RET_BYTES: [u8; 4] = [0xd6, 0x5f, 0x03, 0xc0];
+const PTR_SIZE: u32 = 8;
 
 // ARM64 register usage:
 // x19 - BrainFuck memory pointer (callee-saved)
@@ -28,17 +29,26 @@ fn load_immediate_x9(bytes: &mut Vec<u8>, value: isize) {
 
     if value_u64 > 0xFFFF || value < 0 {
         // movk x9, #((value >> 16) & 0xFFFF), lsl #16
-        emit_u32(bytes, 0xf2a00009 | ((((value_u64 >> 16) & 0xFFFF) as u32) << 5));
+        emit_u32(
+            bytes,
+            0xf2a00009 | ((((value_u64 >> 16) & 0xFFFF) as u32) << 5),
+        );
     }
 
     if value_u64 > 0xFFFFFFFF || value < 0 {
         // movk x9, #((value >> 32) & 0xFFFF), lsl #32
-        emit_u32(bytes, 0xf2c00009 | ((((value_u64 >> 32) & 0xFFFF) as u32) << 5));
+        emit_u32(
+            bytes,
+            0xf2c00009 | ((((value_u64 >> 32) & 0xFFFF) as u32) << 5),
+        );
     }
 
     if value < 0 {
         // movk x9, #((value >> 48) & 0xFFFF), lsl #48
-        emit_u32(bytes, 0xf2e00009 | ((((value_u64 >> 48) & 0xFFFF) as u32) << 5));
+        emit_u32(
+            bytes,
+            0xf2e00009 | ((((value_u64 >> 48) & 0xFFFF) as u32) << 5),
+        );
     }
 }
 
@@ -81,7 +91,7 @@ pub fn wrapper(bytes: &mut Vec<u8>, content: Vec<u8>) {
     callee_restore_from_stack(bytes);
 
     // ret
-    emit_u32(bytes, 0xd65f03c0);
+    emit_u32(bytes, u32::from_be_bytes(RET_BYTES));
 }
 
 fn callee_restore_from_stack(bytes: &mut Vec<u8>) {
@@ -198,7 +208,7 @@ fn fn_call_post(bytes: &mut Vec<u8>) {
 
 /// Make a call to a vtable entry in x21.
 fn call_vtable_entry(bytes: &mut Vec<u8>, entry: VTableEntry) {
-    let offset = (entry as u32) * (PTR_BYTES as u32);
+    let offset = (entry as u32) * PTR_SIZE;
 
     // Load function pointer from vtable
     // ldr x8, [x21, #offset]
@@ -255,7 +265,7 @@ pub fn add(bytes: &mut Vec<u8>, offset: isize) {
     emit_u32(bytes, 0x39400268);
 
     // Load value at offset
-    if offset >= -256 && offset <= 255 {
+    if (-256..=255).contains(&offset) {
         // ldrsb w9, [x19, #offset]
         emit_u32(bytes, 0x38c00269 | encode_signed_imm9(offset));
     } else {
@@ -294,7 +304,7 @@ pub fn add(bytes: &mut Vec<u8>, offset: isize) {
     emit_u32(bytes, 0x0b080129);
 
     // Store back at offset
-    if offset >= 0 && offset <= 4095 {
+    if (0..=4095).contains(&offset) {
         // strb w9, [x19, #offset]
         emit_u32(bytes, 0x39000269 | ((offset as u32) << 10));
     } else {
@@ -313,7 +323,7 @@ pub fn sub(bytes: &mut Vec<u8>, offset: isize) {
     emit_u32(bytes, 0x39400268);
 
     // Load value at offset
-    if offset >= -256 && offset <= 255 {
+    if (-256..=255).contains(&offset) {
         // ldrsb w9, [x19, #offset]
         emit_u32(bytes, 0x38c00269 | encode_signed_imm9(offset));
     } else {
@@ -352,7 +362,7 @@ pub fn sub(bytes: &mut Vec<u8>, offset: isize) {
     emit_u32(bytes, 0x4b080129);
 
     // Store back at offset
-    if offset >= 0 && offset <= 4095 {
+    if (0..=4095).contains(&offset) {
         // strb w9, [x19, #offset]
         emit_u32(bytes, 0x39000269 | ((offset as u32) << 10));
     } else {
@@ -401,16 +411,25 @@ pub fn jit_loop(bytes: &mut Vec<u8>, loop_index: JITPromiseID) {
     let loop_index_u64 = loop_index as u64;
 
     // movz x1, #(loop_index & 0xFFFF)
-    emit_u32(bytes, 0xd2800001 | (((loop_index_u64 & 0xFFFF) as u32) << 5));
+    emit_u32(
+        bytes,
+        0xd2800001 | (((loop_index_u64 & 0xFFFF) as u32) << 5),
+    );
 
     if loop_index_u64 > 0xFFFF {
         // movk x1, #((loop_index >> 16) & 0xFFFF), lsl #16
-        emit_u32(bytes, 0xf2a00001 | ((((loop_index_u64 >> 16) & 0xFFFF) as u32) << 5));
+        emit_u32(
+            bytes,
+            0xf2a00001 | ((((loop_index_u64 >> 16) & 0xFFFF) as u32) << 5),
+        );
     }
 
     if loop_index_u64 > 0xFFFFFFFF {
         // movk x1, #((loop_index >> 32) & 0xFFFF), lsl #32
-        emit_u32(bytes, 0xf2c00001 | ((((loop_index_u64 >> 32) & 0xFFFF) as u32) << 5));
+        emit_u32(
+            bytes,
+            0xf2c00001 | ((((loop_index_u64 >> 32) & 0xFFFF) as u32) << 5),
+        );
     }
 
     // Move data pointer into the third argument
@@ -441,7 +460,7 @@ pub fn multiply_add(bytes: &mut Vec<u8>, offset: isize, factor: u8) {
     emit_u32(bytes, 0x1b097d08);
 
     // Load value at offset and add
-    if offset >= -256 && offset <= 255 {
+    if (-256..=255).contains(&offset) {
         // ldrb w9, [x19, #offset]
         let offset_encoded = if offset >= 0 {
             0x39400269 | ((offset as u32) << 10)
@@ -454,7 +473,7 @@ pub fn multiply_add(bytes: &mut Vec<u8>, offset: isize, factor: u8) {
         emit_u32(bytes, 0x0b080129);
 
         // Store back at offset
-        if offset >= 0 && offset <= 4095 {
+        if (0..=4095).contains(&offset) {
             // strb w9, [x19, #offset]
             emit_u32(bytes, 0x39000269 | ((offset as u32) << 10));
         } else {
@@ -486,7 +505,7 @@ pub fn copy_to(bytes: &mut Vec<u8>, offsets: Vec<isize>) {
     emit_u32(bytes, 0x39400268);
 
     for offset in offsets {
-        if offset >= -256 && offset <= 255 {
+        if (-256..=255).contains(&offset) {
             // ldrb w9, [x19, #offset]
             let offset_encoded = if offset >= 0 {
                 0x39400269 | ((offset as u32) << 10)
@@ -499,7 +518,7 @@ pub fn copy_to(bytes: &mut Vec<u8>, offsets: Vec<isize>) {
             emit_u32(bytes, 0x0b080129);
 
             // Store back at offset
-            if offset >= 0 && offset <= 4095 {
+            if (0..=4095).contains(&offset) {
                 // strb w9, [x19, #offset]
                 emit_u32(bytes, 0x39000269 | ((offset as u32) << 10));
             } else {
