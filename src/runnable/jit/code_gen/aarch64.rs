@@ -1,7 +1,7 @@
 use crate::runnable::jit::jit_promise::JITPromiseID;
 use crate::runnable::jit::jit_target::VTableEntry;
 
-pub const RET_BYTES: [u8; 4] = [0xd6, 0x5f, 0x03, 0xc0];
+pub const RET: u32 = 0xd65f03c0;
 const PTR_SIZE: u32 = 8;
 
 // ARM64 register usage:
@@ -91,7 +91,7 @@ pub fn wrapper(bytes: &mut Vec<u8>, content: Vec<u8>) {
     callee_restore_from_stack(bytes);
 
     // ret
-    emit_u32(bytes, u32::from_be_bytes(RET_BYTES));
+    emit_u32(bytes, RET);
 }
 
 fn callee_restore_from_stack(bytes: &mut Vec<u8>) {

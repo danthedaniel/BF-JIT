@@ -3,7 +3,7 @@ use std::convert::TryInto;
 use crate::runnable::jit::jit_promise::JITPromiseID;
 use crate::runnable::jit::jit_target::VTableEntry;
 
-pub const RET_BYTES: [u8; 1] = [0xc3];
+pub const RET: u8 = 0xc3;
 const PTR_SIZE: u8 = 8;
 
 fn callee_save_to_stack(bytes: &mut Vec<u8>) {
@@ -71,7 +71,7 @@ pub fn wrapper(bytes: &mut Vec<u8>, content: Vec<u8>) {
     callee_restore_from_stack(bytes);
 
     // ret
-    bytes.extend_from_slice(&RET_BYTES);
+    bytes.push(RET);
 }
 
 fn callee_restore_from_stack(bytes: &mut Vec<u8>) {

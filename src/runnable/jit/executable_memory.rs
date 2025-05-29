@@ -2,7 +2,7 @@ use libc::{_SC_PAGESIZE, sysconf};
 use std::ops::Deref;
 use std::sync::OnceLock;
 
-use super::code_gen::RET_BYTES;
+use super::code_gen::RET;
 
 // macos needs an extra flag
 #[cfg(target_os = "macos")]
@@ -82,8 +82,10 @@ impl ExecutableMemory {
     }
 
     fn fill_with_ret(ptr: *mut u8, len: usize) {
-        for word in 0..(len / RET_BYTES.len()) {
-            for (offset, byte) in RET_BYTES.iter().enumerate() {
+        let ret_bytes = RET.to_ne_bytes();
+
+        for word in 0..(len / ret_bytes.len()) {
+            for (offset, byte) in ret_bytes.iter().enumerate() {
                 unsafe {
                     *ptr.add(word + offset) = *byte;
                 }
