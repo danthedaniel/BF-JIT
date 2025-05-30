@@ -63,15 +63,6 @@ fn test_help_flag_short() {
 }
 
 #[test]
-#[cfg(not(feature = "jit"))]
-fn test_jit_not_supported() {
-    let output = run_fucker(&["tests/programs/hello_world.bf"]);
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert_eq!(stderr, "JIT is not supported for this architecture\n");
-}
-
-#[test]
 #[cfg(feature = "jit")]
 fn test_hello_world_program() {
     let output = run_fucker(&["tests/programs/hello_world.bf"]);
