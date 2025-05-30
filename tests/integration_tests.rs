@@ -1,30 +1,15 @@
-use std::process::{Command, Stdio};
-use std::io::Write;
 use std::fs;
+use std::io::Write;
+use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::sync::Once;
-
-static INIT: Once = Once::new();
 
 /// Helper function to run the fucker binary with given arguments
 fn run_fucker(args: &[&str]) -> std::process::Output {
-    INIT.call_once(|| {
-        let output =
-            Command::new("cargo")
-                .args(["build"])
-                .output()
-                .expect("Failed to build fucker binary");
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            eprint!("{}", stderr);
-            panic!("Failed to build binary");
-        }
-    });
-
-    Command::new("target/debug/fucker")
+    Command::new("cargo")
+        .args(["run", "--"])
         .args(args)
         .output()
-        .expect("Failed to execute fucker binary")
+        .expect("Failed to execute fucker binary via cargo run")
 }
 
 /// Helper function to run the fucker binary with stdin input
@@ -39,7 +24,9 @@ fn run_fucker_with_input(args: &[&str], input: &str) -> std::process::Output {
         .expect("Failed to start fucker binary");
 
     if let Some(stdin) = child.stdin.as_mut() {
-        stdin.write_all(input.as_bytes()).expect("Failed to write to stdin");
+        stdin
+            .write_all(input.as_bytes())
+            .expect("Failed to write to stdin");
     }
 
     child.wait_with_output().expect("Failed to read output")
@@ -113,7 +100,7 @@ fn test_nonexistent_file() {
 #[test]
 #[cfg(feature = "jit")]
 fn test_invalid_syntax() {
-    let temp_file = create_temp_program("++[+");  // Unmatched bracket
+    let temp_file = create_temp_program("++[+"); // Unmatched bracket
     let output = run_fucker(&[&temp_file]);
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -156,7 +143,7 @@ fn test_stdin_input() {
 #[test]
 fn test_stdin_with_program_interpreter() {
     // Use interpreter for stdin tests as JIT seems to have issues with stdin
-    let program = "++++++++[>++++++++<-]>+.";  // Outputs 'A'
+    let program = "++++++++[>++++++++<-]>+."; // Outputs 'A'
     let output = run_fucker_with_input(&["--int", "-"], program);
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -217,7 +204,7 @@ fn test_program_with_comments() {
         Another comment
         "#;
     let temp_file = create_temp_program(program_with_comments);
-    let output = run_fucker(&["--int", &temp_file]);  // Use interpreter for reliability
+    let output = run_fucker(&["--int", &temp_file]); // Use interpreter for reliability
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(stdout, "A");

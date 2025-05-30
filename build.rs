@@ -1,10 +1,12 @@
 #[rustfmt::skip]
 fn main() {
+  let target = std::env::var("TARGET").unwrap();
+
   let jit_supported =
-      cfg!(any(target_os = "linux", target_arch = "aarch64")) ||
-      cfg!(any(target_os = "linux", target_arch = "x86_64")) ||
-      cfg!(any(target_os = "macos", target_arch = "aarch64")) ||
-      cfg!(any(target_os = "macos", target_arch = "x86_64"));
+      target == "aarch64-unknown-linux-gnu" ||
+      target == "x86_64-unknown-linux-gnu" ||
+      target == "aarch64-apple-darwin" ||
+      target == "x86_64-apple-darwin";
 
   if jit_supported {
     println!("cargo:rustc-cfg=feature=\"jit\"");
