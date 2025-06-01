@@ -9,9 +9,7 @@ without any research or examination of prior art\*.
 
 **\*Update**:
 The aarch64 implementation in `src/runnable/jit/code_gen/aarch64.rs` was written
-entirely by Claude 4 Opus. It managed to port the code perfectly on the first
-try. Adjustments were later made to clean up its messy cross-platform adjustments
-to executable memory allocation. But overall I'm very impressed.
+almost entirely by Claude 4 Opus.
 
 ## Supports
 
