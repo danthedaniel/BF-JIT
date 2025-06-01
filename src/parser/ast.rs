@@ -8,9 +8,9 @@ pub enum AstNode {
     /// Remove from the current memory cell.
     Decr(u8),
     /// Shift the data pointer to the right.
-    Next(usize),
+    Next(u16),
     /// Shift the data pointer to the left.
-    Prev(usize),
+    Prev(u16),
     /// Display the current memory cell as an ASCII character.
     Print,
     /// Read one character from stdin.
@@ -18,13 +18,13 @@ pub enum AstNode {
     /// Set a literal value in the current cell.
     Set(u8),
     /// Add the current cell to the cell n spaces away and set the current cell to 0.
-    AddTo(isize),
+    AddTo(i16),
     /// Subtract the current cell from the cell n spaces away and set the current cell to 0.
-    SubFrom(isize),
+    SubFrom(i16),
     /// Multiply current cell by a factor and add to cell at offset, then set current to 0.
-    MultiplyAddTo(isize, u8),
+    MultiplyAddTo(i16, u8),
     /// Copy current cell to multiple offsets, then set current to 0.
-    CopyTo(Vec<isize>),
+    CopyTo(Vec<i16>),
     /// Loop over the contained instructions while the current memory cell is
     /// not zero.
     Loop(VecDeque<AstNode>),
@@ -117,39 +117,39 @@ impl Ast {
                 (AstNode::Decr(1), AstNode::Prev(a), AstNode::Incr(1), AstNode::Next(b))
                     if *a == *b =>
                 {
-                    let offset = -(*a as isize);
+                    let offset = -(*a as i16);
                     return Some(AstNode::AddTo(offset));
                 }
                 (AstNode::Decr(1), AstNode::Next(a), AstNode::Incr(1), AstNode::Prev(b))
                     if *a == *b =>
                 {
-                    let offset = *a as isize;
+                    let offset = *a as i16;
                     return Some(AstNode::AddTo(offset));
                 }
                 // SubFrom
                 (AstNode::Decr(1), AstNode::Prev(a), AstNode::Decr(1), AstNode::Next(b))
                     if *a == *b =>
                 {
-                    let offset = -(*a as isize);
+                    let offset = -(*a as i16);
                     return Some(AstNode::SubFrom(offset));
                 }
                 (AstNode::Decr(1), AstNode::Next(a), AstNode::Decr(1), AstNode::Prev(b))
                     if *a == *b =>
                 {
-                    let offset = *a as isize;
+                    let offset = *a as i16;
                     return Some(AstNode::SubFrom(offset));
                 }
                 // MultiplyAddTo
                 (AstNode::Decr(1), AstNode::Next(a), AstNode::Incr(n), AstNode::Prev(b))
                     if *a == *b && *n > 1 =>
                 {
-                    let offset = *a as isize;
+                    let offset = *a as i16;
                     return Some(AstNode::MultiplyAddTo(offset, *n));
                 }
                 (AstNode::Decr(1), AstNode::Prev(a), AstNode::Incr(n), AstNode::Next(b))
                     if *a == *b && *n > 1 =>
                 {
-                    let offset = -(*a as isize);
+                    let offset = -(*a as i16);
                     return Some(AstNode::MultiplyAddTo(offset, *n));
                 }
                 _ => {}
@@ -173,13 +173,13 @@ impl Ast {
             return None;
         }
 
-        let mut position: isize = 0;
+        let mut position: i16 = 0;
         let mut targets = Vec::new();
 
         for node in input.iter().skip(1) {
             match node {
-                AstNode::Next(n) => position += *n as isize,
-                AstNode::Prev(n) => position -= *n as isize,
+                AstNode::Next(n) => position += *n as i16,
+                AstNode::Prev(n) => position -= *n as i16,
                 AstNode::Incr(1) => targets.push(position),
                 _ => return None,
             }

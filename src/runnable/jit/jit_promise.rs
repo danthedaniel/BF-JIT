@@ -5,10 +5,10 @@ use super::JITTarget;
 use crate::parser::AstNode;
 
 #[repr(C)]
-pub struct JITPromiseID(usize);
+pub struct JITPromiseID(u16);
 
 impl JITPromiseID {
-    pub fn value(&self) -> usize {
+    pub fn value(&self) -> u16 {
         return self.0;
     }
 }
@@ -40,7 +40,7 @@ impl PromiseSet {
         for (index, promise) in self.iter().enumerate() {
             if let Some(promise) = promise {
                 if promise.source() == &nodes {
-                    return JITPromiseID(index);
+                    return JITPromiseID(index as u16);
                 }
             }
             // It's possible for `promise` to be None here. If the call stack
@@ -62,7 +62,9 @@ impl PromiseSet {
         // If this is a new promise, add it to the pool.
         self.push(Some(JITPromise::Deferred(nodes)));
 
-        JITPromiseID(self.len() - 1)
+        let index = self.len() - 1;
+        assert!(index <= u16::MAX as usize, "Too many JIT promises (max {})", u16::MAX);
+        JITPromiseID(index as u16)
     }
 }
 

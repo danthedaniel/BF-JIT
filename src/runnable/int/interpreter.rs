@@ -93,15 +93,15 @@ impl Interpreter {
                 self.memory[self.dp] = current.wrapping_sub(n);
             }
             Instr::Next(n) => {
-                self.dp += n;
+                self.dp += n as usize;
             }
             Instr::Prev(n) => {
-                if self.dp < n {
+                if self.dp < n as usize {
                     eprintln!("Attempted to point below memory location 0.");
                     return false;
                 }
 
-                self.dp -= n;
+                self.dp -= n as usize;
             }
             Instr::Print => {
                 if let Err(msg) = self.io_write.write_all(&[current]) {
@@ -127,7 +127,7 @@ impl Interpreter {
             }
             Instr::AddTo(n) => {
                 if self.memory[self.dp] != 0 {
-                    let target_pos = self.dp as isize + n;
+                    let target_pos = self.dp as isize + n as isize;
 
                     if (target_pos < 0) || (target_pos as usize >= self.memory.len()) {
                         eprintln!("Attempted to move data outside of the bounds of memory");
@@ -141,7 +141,7 @@ impl Interpreter {
             }
             Instr::SubFrom(n) => {
                 if self.memory[self.dp] != 0 {
-                    let target_pos = self.dp as isize + n;
+                    let target_pos = self.dp as isize + n as isize;
 
                     if (target_pos < 0) || (target_pos as usize >= self.memory.len()) {
                         eprintln!("Attempted to move data outside of the bounds of memory");
@@ -155,7 +155,7 @@ impl Interpreter {
             }
             Instr::MultiplyAddTo(offset, factor) => {
                 if self.memory[self.dp] != 0 {
-                    let target_pos = self.dp as isize + offset;
+                    let target_pos = self.dp as isize + offset as isize;
 
                     if (target_pos < 0) || (target_pos as usize >= self.memory.len()) {
                         eprintln!("Attempted to move data outside of the bounds of memory");
@@ -174,7 +174,7 @@ impl Interpreter {
                     let value = self.memory[self.dp];
 
                     for offset in offsets {
-                        let target_pos = self.dp as isize + offset;
+                        let target_pos = self.dp as isize + offset as isize;
 
                         if (target_pos < 0) || (target_pos as usize >= self.memory.len()) {
                             eprintln!("Attempted to copy data outside of the bounds of memory");
@@ -257,5 +257,26 @@ mod tests {
 
         let output_string = shared_buffer.get_string_content();
         assert_eq!(output_string, "Uryyb Jbeyq! 123");
+    }
+
+    #[test]
+    fn test_multiply_add_to() {
+        use crate::parser::AstNode;
+        use std::collections::VecDeque;
+
+        // Create a simple program that tests MultiplyAddTo
+        // Set cell 0 to 5, then multiply by 3 and add to cell 2
+        let mut nodes = VecDeque::new();
+        nodes.push_back(AstNode::Set(5)); // Set current cell to 5
+        nodes.push_back(AstNode::MultiplyAddTo(2, 3)); // Multiply by 3, add to cell at offset +2
+
+        let mut interpreter = Interpreter::new(nodes);
+        // Step through the program without resetting
+        while interpreter.step() {}
+
+        // Cell 0 should be 0 (cleared after operation)
+        assert_eq!(interpreter.memory[0], 0);
+        // Cell 2 should be 15 (5 * 3)
+        assert_eq!(interpreter.memory[2], 15);
     }
 }

@@ -143,7 +143,7 @@ impl JITTarget {
     /// Callback passed into compiled code. Allows for deferred compilation
     /// targets to be compiled, ran, and later re-ran.
     extern "C" fn jit_callback(&mut self, promise_id: JITPromiseID, mem_ptr: *mut u8) -> *mut u8 {
-        let mut promise = self.context.borrow_mut().promises[promise_id.value()]
+        let mut promise = self.context.borrow_mut().promises[promise_id.value() as usize]
             .take()
             .expect("Someone forgot to put a promise back");
         let return_ptr;
@@ -161,7 +161,7 @@ impl JITTarget {
             }
         };
 
-        self.context.borrow_mut().promises[promise_id.value()] = new_promise;
+        self.context.borrow_mut().promises[promise_id.value() as usize] = new_promise;
 
         return_ptr
     }
@@ -220,6 +220,7 @@ mod tests {
     use super::super::super::test_buffer::SharedBuffer;
     use super::JITTarget;
     use crate::parser::Ast;
+    use crate::runnable::BF_MEMORY_SIZE;
     use crate::runnable::Runnable;
     use std::io::Cursor;
 
@@ -265,5 +266,30 @@ mod tests {
 
         let output_string = shared_buffer.get_string_content();
         assert_eq!(output_string, "Uryyb Jbeyq! 123");
+    }
+
+    #[test]
+    fn test_multiply_add_to() {
+        use crate::parser::AstNode;
+        use std::collections::VecDeque;
+
+        // Create a simple program that tests MultiplyAddTo
+        // Set cell 0 to 5, then multiply by 3 and add to cell 2
+        let mut nodes = VecDeque::new();
+        nodes.push_back(AstNode::Set(5)); // Set current cell to 5
+        nodes.push_back(AstNode::MultiplyAddTo(2, 3)); // Multiply by 3, add to cell at offset +2
+
+        let mut jit_target = JITTarget::new(nodes);
+        let shared_buffer = SharedBuffer::new();
+        jit_target.context.borrow_mut().io_write = Box::new(shared_buffer.clone());
+
+        // Create a custom memory to inspect results
+        let mut bf_mem = vec![0u8; BF_MEMORY_SIZE];
+        jit_target.exec(bf_mem.as_mut_ptr());
+
+        // Cell 0 should be 0 (cleared after operation)
+        assert_eq!(bf_mem[0], 0);
+        // Cell 2 should be 15 (5 * 3)
+        assert_eq!(bf_mem[2], 15);
     }
 }

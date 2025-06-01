@@ -17,41 +17,6 @@ fn emit_u32(bytes: &mut Vec<u8>, instruction: u32) {
     bytes.extend_from_slice(&instruction.to_le_bytes());
 }
 
-fn encode_signed_imm9(offset: isize) -> u32 {
-    ((offset as u32) & 0x1FF) << 12
-}
-
-fn load_immediate_x9(bytes: &mut Vec<u8>, value: isize) {
-    let value_u64 = value as u64;
-
-    // movz x9, #(value & 0xFFFF)
-    emit_u32(bytes, 0xd2800009 | (((value_u64 & 0xFFFF) as u32) << 5));
-
-    if value_u64 > 0xFFFF || value < 0 {
-        // movk x9, #((value >> 16) & 0xFFFF), lsl #16
-        emit_u32(
-            bytes,
-            0xf2a00009 | ((((value_u64 >> 16) & 0xFFFF) as u32) << 5),
-        );
-    }
-
-    if value_u64 > 0xFFFFFFFF || value < 0 {
-        // movk x9, #((value >> 32) & 0xFFFF), lsl #32
-        emit_u32(
-            bytes,
-            0xf2c00009 | ((((value_u64 >> 32) & 0xFFFF) as u32) << 5),
-        );
-    }
-
-    if value < 0 {
-        // movk x9, #((value >> 48) & 0xFFFF), lsl #48
-        emit_u32(
-            bytes,
-            0xf2e00009 | ((((value_u64 >> 48) & 0xFFFF) as u32) << 5),
-        );
-    }
-}
-
 fn callee_save_to_stack(bytes: &mut Vec<u8>) {
     // Save callee-saved registers and link register
     // stp x29, x30, [sp, #-16]!
@@ -134,57 +99,22 @@ pub fn incr(bytes: &mut Vec<u8>, n: u8) {
     emit_u32(bytes, 0x39000268);
 }
 
-pub fn next(bytes: &mut Vec<u8>, n: usize) {
-    if n <= 4095 {
-        // add x19, x19, #n
-        emit_u32(bytes, 0x91000273 | ((n as u32) << 10));
-    } else {
-        // For larger values, use a temporary register
-        // mov x8, #n (using movz/movk instructions)
-        let n_u64 = n as u64;
+pub fn next(bytes: &mut Vec<u8>, n: u16) {
+    // For all values, use a temporary register
+    // movz x8, #n
+    emit_u32(bytes, 0xd2800008 | ((n as u32) << 5));
 
-        // movz x8, #(n & 0xFFFF)
-        emit_u32(bytes, 0xd2800008 | (((n_u64 & 0xFFFF) as u32) << 5));
-
-        if n_u64 > 0xFFFF {
-            // movk x8, #((n >> 16) & 0xFFFF), lsl #16
-            emit_u32(bytes, 0xf2a00008 | ((((n_u64 >> 16) & 0xFFFF) as u32) << 5));
-        }
-
-        if n_u64 > 0xFFFFFFFF {
-            // movk x8, #((n >> 32) & 0xFFFF), lsl #32
-            emit_u32(bytes, 0xf2c00008 | ((((n_u64 >> 32) & 0xFFFF) as u32) << 5));
-        }
-
-        // add x19, x19, x8
-        emit_u32(bytes, 0x8b080273);
-    }
+    // add x19, x19, x8
+    emit_u32(bytes, 0x8b080273);
 }
 
-pub fn prev(bytes: &mut Vec<u8>, n: usize) {
-    if n <= 4095 {
-        // sub x19, x19, #n
-        emit_u32(bytes, 0xd1000273 | ((n as u32) << 10));
-    } else {
-        // For larger values, use a temporary register
-        let n_u64 = n as u64;
+pub fn prev(bytes: &mut Vec<u8>, n: u16) {
+    // For all values, use a temporary register
+    // movz x8, #n
+    emit_u32(bytes, 0xd2800008 | ((n as u32) << 5));
 
-        // movz x8, #(n & 0xFFFF)
-        emit_u32(bytes, 0xd2800008 | (((n_u64 & 0xFFFF) as u32) << 5));
-
-        if n_u64 > 0xFFFF {
-            // movk x8, #((n >> 16) & 0xFFFF), lsl #16
-            emit_u32(bytes, 0xf2a00008 | ((((n_u64 >> 16) & 0xFFFF) as u32) << 5));
-        }
-
-        if n_u64 > 0xFFFFFFFF {
-            // movk x8, #((n >> 32) & 0xFFFF), lsl #32
-            emit_u32(bytes, 0xf2c00008 | ((((n_u64 >> 32) & 0xFFFF) as u32) << 5));
-        }
-
-        // sub x19, x19, x8
-        emit_u32(bytes, 0xcb080273);
-    }
+    // sub x19, x19, x8
+    emit_u32(bytes, 0xcb080273);
 }
 
 fn fn_call_pre(bytes: &mut Vec<u8>) {
@@ -259,116 +189,64 @@ pub fn set(bytes: &mut Vec<u8>, value: u8) {
     emit_u32(bytes, 0x39000268);
 }
 
-pub fn add(bytes: &mut Vec<u8>, offset: isize) {
-    // Load current cell value
+pub fn add(bytes: &mut Vec<u8>, offset: i16) {
+    // Load current cell value (at_ptr)
     // ldrb w8, [x19]
     emit_u32(bytes, 0x39400268);
 
-    // Load value at offset
-    if (-256..=255).contains(&offset) {
-        // ldrsb w9, [x19, #offset]
-        emit_u32(bytes, 0x38c00269 | encode_signed_imm9(offset));
+    // Load offset into register (sign-extended)
+    if offset >= 0 {
+        // movz x9, #offset
+        emit_u32(bytes, 0xd2800009 | ((offset as u32) << 5));
     } else {
-        // Load offset into x9
-        load_immediate_x9(bytes, offset);
-
-        // ldrb w10, [x19, x9]
-        emit_u32(bytes, 0x38696a6a);
-
-        // add w10, w10, w8
-        emit_u32(bytes, 0x0b08014a);
-
-        // strb w10, [x19, x9]
-        emit_u32(bytes, 0x3829626a);
-
-        // mov w8, #0
-        emit_u32(bytes, 0x52800008);
-
-        // strb w8, [x19]
-        emit_u32(bytes, 0x39000268);
-
-        return;
+        // For negative values, use movn
+        let not_offset = !offset;
+        emit_u32(bytes, 0x92800009 | ((not_offset as u32) << 5));
     }
 
-    // Add to value at offset
-    // ldrb w9, [x19, #offset]
-    let offset_encoded = if offset >= 0 {
-        0x39400269 | ((offset as u32) << 10)
-    } else {
-        // For negative offsets, use ldurb
-        0x38400269 | encode_signed_imm9(offset)
-    };
-    emit_u32(bytes, offset_encoded);
+    // Load value at offset (at_offset)
+    // ldrb w10, [x19, x9]
+    emit_u32(bytes, 0x38696a6a);
 
-    // add w9, w9, w8
-    emit_u32(bytes, 0x0b080129);
+    // Add the two values: at_ptr + at_offset
+    // add w8, w8, w10
+    emit_u32(bytes, 0x0b0a0108);
 
-    // Store back at offset
-    if (0..=4095).contains(&offset) {
-        // strb w9, [x19, #offset]
-        emit_u32(bytes, 0x39000269 | ((offset as u32) << 10));
-    } else {
-        // sturb w9, [x19, #offset]
-        emit_u32(bytes, 0x38000269 | encode_signed_imm9(offset));
-    }
+    // Store the result back at offset location
+    // strb w8, [x19, x9]
+    emit_u32(bytes, 0x38296a68);
 
     // Set current cell to 0
     // strb wzr, [x19]
     emit_u32(bytes, 0x3900027f);
 }
 
-pub fn sub(bytes: &mut Vec<u8>, offset: isize) {
-    // Load current cell value
+pub fn sub(bytes: &mut Vec<u8>, offset: i16) {
+    // Load current cell value (at_ptr)
     // ldrb w8, [x19]
     emit_u32(bytes, 0x39400268);
 
-    // Load value at offset
-    if (-256..=255).contains(&offset) {
-        // ldrsb w9, [x19, #offset]
-        emit_u32(bytes, 0x38c00269 | encode_signed_imm9(offset));
+    // Load offset into register (sign-extended)
+    if offset >= 0 {
+        // movz x9, #offset
+        emit_u32(bytes, 0xd2800009 | ((offset as u32) << 5));
     } else {
-        // Load offset into x9
-        load_immediate_x9(bytes, offset);
-
-        // ldrb w10, [x19, x9]
-        emit_u32(bytes, 0x38696a6a);
-
-        // sub w10, w10, w8
-        emit_u32(bytes, 0x4b08014a);
-
-        // strb w10, [x19, x9]
-        emit_u32(bytes, 0x3829626a);
-
-        // mov w8, #0
-        emit_u32(bytes, 0x52800008);
-
-        // strb w8, [x19]
-        emit_u32(bytes, 0x39000268);
-
-        return;
+        // For negative values, use movn
+        let not_offset = !offset;
+        emit_u32(bytes, 0x92800009 | ((not_offset as u32) << 5));
     }
 
-    // Subtract from value at offset
-    // ldrb w9, [x19, #offset]
-    let offset_encoded = if offset >= 0 {
-        0x39400269 | ((offset as u32) << 10)
-    } else {
-        // For negative offsets, use ldurb
-        0x38400269 | encode_signed_imm9(offset)
-    };
-    emit_u32(bytes, offset_encoded);
+    // Load value at offset (at_offset)
+    // ldrb w10, [x19, x9]
+    emit_u32(bytes, 0x38696a6a);
 
-    // sub w9, w9, w8
-    emit_u32(bytes, 0x4b080129);
+    // Subtract: at_offset - at_ptr
+    // sub w10, w10, w8
+    emit_u32(bytes, 0x4b08014a);
 
-    // Store back at offset
-    if (0..=4095).contains(&offset) {
-        // strb w9, [x19, #offset]
-        emit_u32(bytes, 0x39000269 | ((offset as u32) << 10));
-    } else {
-        // sturb w9, [x19, #offset]
-        emit_u32(bytes, 0x38000269 | encode_signed_imm9(offset));
-    }
+    // Store the result back at offset location
+    // strb w10, [x19, x9]
+    emit_u32(bytes, 0x38296a6a);
 
     // Set current cell to 0
     // strb wzr, [x19]
@@ -380,7 +258,7 @@ pub fn aot_loop(bytes: &mut Vec<u8>, inner_loop_bytes: Vec<u8>) {
     // ldrb w8, [x19]
     emit_u32(bytes, 0x39400268);
 
-    // cbz w8, end_label
+    // cbz w8
     let skip_offset = (inner_loop_bytes.len() / 4 + 2) as u32; // +2 for the branch back instruction
     emit_u32(bytes, 0x34000008 | (skip_offset << 5));
 
@@ -394,8 +272,6 @@ pub fn aot_loop(bytes: &mut Vec<u8>, inner_loop_bytes: Vec<u8>) {
     // cbnz w8, loop_start
     let loop_offset = -((bytes.len() / 4 - 1) as i32);
     emit_u32(bytes, 0x35000008 | ((loop_offset as u32 & 0x7FFFF) << 5));
-
-    // end_label:
 }
 
 pub fn jit_loop(bytes: &mut Vec<u8>, loop_id: JITPromiseID) {
@@ -408,26 +284,8 @@ pub fn jit_loop(bytes: &mut Vec<u8>, loop_id: JITPromiseID) {
     emit_u32(bytes, 0xaa1403e0);
 
     // Move target index into the second argument
-    let loop_id_u64 = loop_id.value() as u64;
-
-    // movz x1, #(loop_index & 0xFFFF)
-    emit_u32(bytes, 0xd2800001 | (((loop_id_u64 & 0xFFFF) as u32) << 5));
-
-    if loop_id_u64 > 0xFFFF {
-        // movk x1, #((loop_index >> 16) & 0xFFFF), lsl #16
-        emit_u32(
-            bytes,
-            0xf2a00001 | ((((loop_id_u64 >> 16) & 0xFFFF) as u32) << 5),
-        );
-    }
-
-    if loop_id_u64 > 0xFFFFFFFF {
-        // movk x1, #((loop_index >> 32) & 0xFFFF), lsl #32
-        emit_u32(
-            bytes,
-            0xf2c00001 | ((((loop_id_u64 >> 32) & 0xFFFF) as u32) << 5),
-        );
-    }
+    // movz x1, #loop_id.value()
+    emit_u32(bytes, 0xd2800001 | ((loop_id.value() as u32) << 5));
 
     // Move data pointer into the third argument
     // mov x2, x19
@@ -444,7 +302,7 @@ pub fn jit_loop(bytes: &mut Vec<u8>, loop_id: JITPromiseID) {
     emit_u32(bytes, 0xa8c157f4);
 }
 
-pub fn multiply_add(bytes: &mut Vec<u8>, offset: isize, factor: u8) {
+pub fn multiply_add(bytes: &mut Vec<u8>, offset: i16, factor: u8) {
     // Load current cell value
     // ldrb w8, [x19]
     emit_u32(bytes, 0x39400268);
@@ -456,85 +314,52 @@ pub fn multiply_add(bytes: &mut Vec<u8>, offset: isize, factor: u8) {
     // mul w8, w8, w9
     emit_u32(bytes, 0x1b097d08);
 
-    // Load value at offset and add
-    if (-256..=255).contains(&offset) {
-        // ldrb w9, [x19, #offset]
-        let offset_encoded = if offset >= 0 {
-            0x39400269 | ((offset as u32) << 10)
-        } else {
-            0x38400269 | encode_signed_imm9(offset)
-        };
-        emit_u32(bytes, offset_encoded);
-
-        // add w9, w9, w8
-        emit_u32(bytes, 0x0b080129);
-
-        // Store back at offset
-        if (0..=4095).contains(&offset) {
-            // strb w9, [x19, #offset]
-            emit_u32(bytes, 0x39000269 | ((offset as u32) << 10));
-        } else {
-            // sturb w9, [x19, #offset]
-            emit_u32(bytes, 0x38000269 | encode_signed_imm9(offset));
-        }
+    // Load offset into w9 (32-bit value)
+    if offset >= 0 {
+        // mov w9, #offset
+        emit_u32(bytes, 0x52800009 | ((offset as u32) << 5));
     } else {
-        // Load offset into x9
-        load_immediate_x9(bytes, offset);
-
-        // ldrb w10, [x19, x9]
-        emit_u32(bytes, 0x38696a6a);
-
-        // add w10, w10, w8
-        emit_u32(bytes, 0x0b08014a);
-
-        // strb w10, [x19, x9]
-        emit_u32(bytes, 0x3829626a);
+        // For negative values, use movn
+        emit_u32(bytes, 0x12800009 | ((!offset as u32) << 5));
     }
+
+    // ldrb w10, [x19, w9, sxtw]
+    emit_u32(bytes, 0x38a96a6a);
+
+    // add w10, w10, w8
+    emit_u32(bytes, 0x0b08014a);
+
+    // strb w10, [x19, w9, sxtw]
+    emit_u32(bytes, 0x38296a6a);
 
     // Set current cell to 0
     // strb wzr, [x19]
     emit_u32(bytes, 0x3900027f);
 }
 
-pub fn copy_to(bytes: &mut Vec<u8>, offsets: Vec<isize>) {
+pub fn copy_to(bytes: &mut Vec<u8>, offsets: Vec<i16>) {
     // Load current cell value
     // ldrb w8, [x19]
     emit_u32(bytes, 0x39400268);
 
     for offset in offsets {
-        if (-256..=255).contains(&offset) {
-            // ldrb w9, [x19, #offset]
-            let offset_encoded = if offset >= 0 {
-                0x39400269 | ((offset as u32) << 10)
-            } else {
-                0x38400269 | encode_signed_imm9(offset)
-            };
-            emit_u32(bytes, offset_encoded);
-
-            // add w9, w9, w8
-            emit_u32(bytes, 0x0b080129);
-
-            // Store back at offset
-            if (0..=4095).contains(&offset) {
-                // strb w9, [x19, #offset]
-                emit_u32(bytes, 0x39000269 | ((offset as u32) << 10));
-            } else {
-                // sturb w9, [x19, #offset]
-                emit_u32(bytes, 0x38000269 | encode_signed_imm9(offset));
-            }
+        // Load offset into w9 (32-bit value)
+        if offset >= 0 {
+            // mov w9, #offset
+            emit_u32(bytes, 0x52800009 | ((offset as u32) << 5));
         } else {
-            // Load offset into x9
-            load_immediate_x9(bytes, offset);
-
-            // ldrb w10, [x19, x9]
-            emit_u32(bytes, 0x38696a6a);
-
-            // add w10, w10, w8
-            emit_u32(bytes, 0x0b08014a);
-
-            // strb w10, [x19, x9]
-            emit_u32(bytes, 0x3829626a);
+            // For negative values, use movn
+            emit_u32(bytes, 0x12800009 | ((!offset as u32) << 5));
         }
+
+        // ldrb w10, [x19, w9, sxtw]
+        emit_u32(bytes, 0x38a96a6a);
+
+        // add w10, w10, w8
+        emit_u32(bytes, 0x0b08014a);
+
+        // strb w10, [x19, w9, sxtw]
+        emit_u32(bytes, 0x38296a6a);
     }
 
     // Set current cell to 0
