@@ -85,14 +85,13 @@ impl ExecutableMemory {
     }
 
     fn make_executable(buffer: &mut [u8]) {
-        let mprotect_result;
-        unsafe {
-            mprotect_result = libc::mprotect(
+        let mprotect_result = unsafe {
+            libc::mprotect(
                 buffer.as_mut_ptr() as *mut libc::c_void,
                 buffer.len(),
                 libc::PROT_READ | libc::PROT_EXEC,
-            );
-        }
+            )
+        };
 
         if mprotect_result != 0 {
             panic!(
@@ -105,10 +104,7 @@ impl ExecutableMemory {
 
 impl Drop for ExecutableMemory {
     fn drop(&mut self) {
-        let munmap_result;
-        unsafe {
-            munmap_result = libc::munmap(self.ptr as *mut libc::c_void, self.len);
-        }
+        let munmap_result = unsafe { libc::munmap(self.ptr as *mut libc::c_void, self.len) };
 
         if munmap_result != 0 {
             panic!(

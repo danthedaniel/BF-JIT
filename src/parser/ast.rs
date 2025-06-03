@@ -110,7 +110,6 @@ impl Ast {
             }
         }
 
-        // Move current cell if not 0
         if input.len() == 4 {
             match (&input[0], &input[1], &input[2], &input[3]) {
                 // AddTo
