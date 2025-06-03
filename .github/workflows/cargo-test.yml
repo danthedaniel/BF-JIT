@@ -38,15 +38,14 @@ jobs:
           target: ${{ matrix.target }}
 
       - name: Install dependencies
+        if: startsWith(matrix.os, 'ubuntu')
         run: |
-          if [[ "${{ matrix.os }}" == ubuntu* ]]; then
-            sudo apt-get update
+          sudo apt-get update
 
-            if [[ "${{ matrix.target }}" == "i686-unknown-linux-gnu" ]]; then
-              sudo apt-get install -y gcc-multilib
-            else
-              sudo apt-get install -y gcc
-            fi
+          if [[ "${{ matrix.target }}" == "i686-unknown-linux-gnu" ]]; then
+            sudo apt-get install -y gcc-multilib
+          else
+            sudo apt-get install -y gcc
           fi
 
       - name: Check
