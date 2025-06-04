@@ -7,10 +7,10 @@ extern crate docopt;
 mod parser;
 mod runnable;
 
+use anyhow::{Context, Result};
 use docopt::Docopt;
 use std::fs::File;
 use std::io::{Read, stdin};
-use std::process::exit;
 
 use parser::Ast;
 use runnable::Runnable;
@@ -39,21 +39,18 @@ struct Args {
     flag_int: bool,
 }
 
-fn main() {
+fn main() -> Result<()> {
     let args: Args = Docopt::new(USAGE)
         .and_then(|d| d.deserialize())
         .unwrap_or_else(|e| e.exit());
 
     let program = read_program(&args.arg_program)
         .and_then(|source| Ast::parse(&source))
-        .unwrap_or_else(|e| {
-            eprintln!("Error occurred while loading program: {}", e);
-            exit(1)
-        });
+        .with_context(|| format!("Failed to load program: {}", args.arg_program))?;
 
     if args.flag_ast {
         println!("{:?}", program);
-        return;
+        return Ok(());
     }
 
     let mut runnable: Box<dyn Runnable> = if args.flag_int {
@@ -61,33 +58,35 @@ fn main() {
     } else {
         #[cfg(not(feature = "jit"))]
         {
-            eprintln!("JIT is not supported for this architecture");
-            exit(1);
+            anyhow::bail!("JIT is not supported for this architecture");
         }
 
         #[cfg(feature = "jit")]
         Box::new(JITTarget::new(program.data))
     };
 
-    runnable.run();
+    runnable
+        .run()
+        .with_context(|| "Runtime error occurred during program execution")?;
+    Ok(())
 }
 
 /// Read a BrainFuck program's source code.
 ///
 /// When path is "-" this will read from stdin.
-fn read_program(path: &str) -> Result<String, String> {
+fn read_program(path: &str) -> Result<String> {
     let mut buffer: String = String::new();
     let mut source: Box<dyn Read> = {
         if path == "-" {
             Box::new(stdin())
         } else {
-            Box::new(File::open(path).map_err(|e| format!("Could not open file: {:?}", e))?)
+            Box::new(File::open(path).with_context(|| format!("Could not open file: {}", path))?)
         }
     };
 
     source
         .read_to_string(&mut buffer)
-        .map_err(|e| format!("Could not read file: {:?}", e))?;
+        .context("Could not read file content")?;
 
     Ok(buffer)
 }

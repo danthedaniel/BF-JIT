@@ -1,3 +1,4 @@
+use anyhow::{Result, bail};
 use std::collections::VecDeque;
 
 /// BrainFuck AST node
@@ -38,7 +39,7 @@ pub struct Ast {
 
 impl Ast {
     /// Convert raw input into an AST.
-    pub fn parse(input: &str) -> Result<Self, String> {
+    pub fn parse(input: &str) -> Result<Self> {
         let mut output = VecDeque::new();
         let mut loops = VecDeque::new();
 
@@ -58,7 +59,11 @@ impl Ast {
                     // Example program that will cause this error:
                     //
                     // []]
-                    let mut current_loop = loops.pop_back().ok_or("More ] than [")?;
+                    let mut current_loop = loops.pop_back().ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "Unmatched ']' bracket - more closing brackets than opening brackets"
+                        )
+                    })?;
 
                     // Do not add loop if it will be the first element in the
                     // output vector. This is because:
@@ -91,7 +96,7 @@ impl Ast {
             // Example program that will cause this error:
             //
             // [[]
-            return Err("More [ than ]".to_string());
+            bail!("Unmatched '[' bracket - more opening brackets than closing brackets");
         }
 
         Ok(Ast {
@@ -116,39 +121,39 @@ impl Ast {
                 (AstNode::Decr(1), AstNode::Prev(a), AstNode::Incr(1), AstNode::Next(b))
                     if *a == *b =>
                 {
-                    let offset = -(*a as i16);
+                    let offset: i16 = (-(*a as i32)).try_into().ok()?;
                     return Some(AstNode::AddTo(offset));
                 }
                 (AstNode::Decr(1), AstNode::Next(a), AstNode::Incr(1), AstNode::Prev(b))
                     if *a == *b =>
                 {
-                    let offset = *a as i16;
+                    let offset = i16::try_from(*a).ok()?;
                     return Some(AstNode::AddTo(offset));
                 }
                 // SubFrom
                 (AstNode::Decr(1), AstNode::Prev(a), AstNode::Decr(1), AstNode::Next(b))
                     if *a == *b =>
                 {
-                    let offset = -(*a as i16);
+                    let offset: i16 = (-(*a as i32)).try_into().ok()?;
                     return Some(AstNode::SubFrom(offset));
                 }
                 (AstNode::Decr(1), AstNode::Next(a), AstNode::Decr(1), AstNode::Prev(b))
                     if *a == *b =>
                 {
-                    let offset = *a as i16;
+                    let offset = i16::try_from(*a).ok()?;
                     return Some(AstNode::SubFrom(offset));
                 }
                 // MultiplyAddTo
-                (AstNode::Decr(1), AstNode::Next(a), AstNode::Incr(n), AstNode::Prev(b))
-                    if *a == *b && *n > 1 =>
-                {
-                    let offset = *a as i16;
-                    return Some(AstNode::MultiplyAddTo(offset, *n));
-                }
                 (AstNode::Decr(1), AstNode::Prev(a), AstNode::Incr(n), AstNode::Next(b))
                     if *a == *b && *n > 1 =>
                 {
-                    let offset = -(*a as i16);
+                    let offset: i16 = (-(*a as i32)).try_into().ok()?;
+                    return Some(AstNode::MultiplyAddTo(offset, *n));
+                }
+                (AstNode::Decr(1), AstNode::Next(a), AstNode::Incr(n), AstNode::Prev(b))
+                    if *a == *b && *n > 1 =>
+                {
+                    let offset = i16::try_from(*a).ok()?;
                     return Some(AstNode::MultiplyAddTo(offset, *n));
                 }
                 _ => {}
@@ -177,9 +182,17 @@ impl Ast {
 
         for node in input.iter().skip(1) {
             match node {
-                AstNode::Next(n) => position += *n as i16,
-                AstNode::Prev(n) => position -= *n as i16,
-                AstNode::Incr(1) => targets.push(position),
+                AstNode::Next(n) => {
+                    let n_i16 = i16::try_from(*n).ok()?;
+                    position = position.checked_add(n_i16)?;
+                }
+                AstNode::Prev(n) => {
+                    let n_i16 = i16::try_from(*n).ok()?;
+                    position = position.checked_sub(n_i16)?;
+                }
+                AstNode::Incr(1) => {
+                    targets.push(position);
+                }
                 _ => return None,
             }
         }
@@ -207,18 +220,16 @@ impl Ast {
             // of adding another identical instruction.
             let combined = match (prev_node, &next_node) {
                 // Combine sequential Incr, Decr, Next and Prev
+                // Keep wrapping behavior for Incr/Decr as that's intended BrainFuck semantics
                 (Some(AstNode::Incr(b)), AstNode::Incr(a)) => {
                     Some(AstNode::Incr(a.wrapping_add(*b)))
                 }
                 (Some(AstNode::Decr(b)), AstNode::Decr(a)) => {
                     Some(AstNode::Decr(a.wrapping_add(*b)))
                 }
-                (Some(AstNode::Next(b)), AstNode::Next(a)) => {
-                    Some(AstNode::Next(a.wrapping_add(*b)))
-                }
-                (Some(AstNode::Prev(b)), AstNode::Prev(a)) => {
-                    Some(AstNode::Prev(a.wrapping_add(*b)))
-                }
+                // Use checked arithmetic for Next/Prev to prevent unexpected overflows
+                (Some(AstNode::Next(b)), AstNode::Next(a)) => a.checked_add(*b).map(AstNode::Next),
+                (Some(AstNode::Prev(b)), AstNode::Prev(a)) => a.checked_add(*b).map(AstNode::Prev),
                 // Dead code elimination: operations that cancel each other
                 (Some(AstNode::Incr(a)), AstNode::Decr(b)) if *a == *b => {
                     output.pop_back();
@@ -236,12 +247,33 @@ impl Ast {
                     output.pop_back();
                     continue;
                 }
-                // Partial cancellation
-                (Some(AstNode::Incr(a)), AstNode::Decr(b)) if *a > *b => Some(AstNode::Incr(a - b)),
-                (Some(AstNode::Incr(a)), AstNode::Decr(b)) if *a < *b => Some(AstNode::Decr(b - a)),
-                (Some(AstNode::Decr(a)), AstNode::Incr(b)) if *a > *b => Some(AstNode::Decr(a - b)),
-                (Some(AstNode::Decr(a)), AstNode::Incr(b)) if *a < *b => Some(AstNode::Incr(b - a)),
-                // Combine Incr or Decr with Set
+                // Partial cancellation with checked arithmetic
+                (Some(AstNode::Incr(a)), AstNode::Decr(b)) if *a > *b => {
+                    a.checked_sub(*b).map(AstNode::Incr)
+                }
+                (Some(AstNode::Incr(a)), AstNode::Decr(b)) if *a < *b => {
+                    b.checked_sub(*a).map(AstNode::Decr)
+                }
+                (Some(AstNode::Decr(a)), AstNode::Incr(b)) if *a > *b => {
+                    a.checked_sub(*b).map(AstNode::Decr)
+                }
+                (Some(AstNode::Decr(a)), AstNode::Incr(b)) if *a < *b => {
+                    b.checked_sub(*a).map(AstNode::Incr)
+                }
+                // Partial cancellation for Next/Prev with checked arithmetic
+                (Some(AstNode::Next(a)), AstNode::Prev(b)) if *a > *b => {
+                    a.checked_sub(*b).map(AstNode::Next)
+                }
+                (Some(AstNode::Next(a)), AstNode::Prev(b)) if *a < *b => {
+                    b.checked_sub(*a).map(AstNode::Prev)
+                }
+                (Some(AstNode::Prev(a)), AstNode::Next(b)) if *a > *b => {
+                    a.checked_sub(*b).map(AstNode::Prev)
+                }
+                (Some(AstNode::Prev(a)), AstNode::Next(b)) if *a < *b => {
+                    b.checked_sub(*a).map(AstNode::Next)
+                }
+                // Combine Incr or Decr with Set (keep wrapping for byte operations)
                 (Some(AstNode::Set(a)), AstNode::Incr(b)) => Some(AstNode::Set(a.wrapping_add(*b))),
                 (Some(AstNode::Set(a)), AstNode::Decr(b)) => Some(AstNode::Set(a.wrapping_sub(*b))),
                 // Node is not combinable

@@ -84,7 +84,7 @@ fn test_nonexistent_file() {
     let output = run_fucker(&["nonexistent_file.bf"]);
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Error occurred while loading program"));
+    assert!(stderr.contains("Failed to load program"));
     assert!(stderr.contains("Could not open file"));
 }
 
@@ -95,7 +95,7 @@ fn test_invalid_syntax() {
     let output = run_fucker(&[&temp_file]);
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Error occurred while loading program"));
+    assert!(stderr.contains("Failed to load program"));
     fs::remove_file(temp_file).ok();
 }
 
@@ -255,7 +255,7 @@ fn test_error_message_format() {
     let output = run_fucker(&["nonexistent.bf"]);
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Error occurred while loading program:"));
+    assert!(stderr.contains("Failed to load program:"));
 }
 
 #[test]
@@ -266,6 +266,6 @@ fn test_bracket_mismatch_error() {
     let output = run_fucker(&[&temp_file]);
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("More [ than ]"));
+    assert!(stderr.contains("Unmatched '[' bracket"));
     fs::remove_file(temp_file).ok();
 }

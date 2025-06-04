@@ -1,3 +1,4 @@
+use anyhow::Result;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::fmt;
@@ -209,9 +210,10 @@ impl JITTarget {
 }
 
 impl Runnable for JITTarget {
-    fn run(&mut self) {
+    fn run(&mut self) -> Result<()> {
         let mut bf_mem = vec![0u8; BF_MEMORY_SIZE]; // Memory space used by BrainFuck
         self.exec(bf_mem.as_mut_ptr());
+        Ok(())
     }
 }
 
@@ -231,7 +233,7 @@ mod tests {
         let shared_buffer = SharedBuffer::new();
         jit_target.context.borrow_mut().io_write = Box::new(shared_buffer.clone());
 
-        jit_target.run();
+        jit_target.run().unwrap();
 
         let output_string = shared_buffer.get_string_content();
         assert_eq!(output_string, "Hello World!\n");
@@ -244,7 +246,7 @@ mod tests {
         let shared_buffer = SharedBuffer::new();
         jit_target.context.borrow_mut().io_write = Box::new(shared_buffer.clone());
 
-        jit_target.run();
+        jit_target.run().unwrap();
 
         let output_string = shared_buffer.get_string_content();
         let expected_output = include_str!("../../../tests/programs/mandelbrot.out");
@@ -262,7 +264,7 @@ mod tests {
         let in_cursor = Box::new(Cursor::new("Hello World! 123".as_bytes().to_vec()));
         jit_target.context.borrow_mut().io_read = in_cursor;
 
-        jit_target.run();
+        jit_target.run().unwrap();
 
         let output_string = shared_buffer.get_string_content();
         assert_eq!(output_string, "Uryyb Jbeyq! 123");
