@@ -62,7 +62,7 @@ fn main() -> Result<()> {
         }
 
         #[cfg(feature = "jit")]
-        Box::new(JITTarget::new(program.data))
+        Box::new(JITTarget::new(program.data)?)
     };
 
     runnable

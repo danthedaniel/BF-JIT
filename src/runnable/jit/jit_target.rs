@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::fmt;
@@ -59,7 +59,7 @@ impl fmt::Debug for JITTarget {
 
 impl JITTarget {
     /// Initialize a JIT compiled version of a program.
-    pub fn new(nodes: VecDeque<AstNode>) -> Self {
+    pub fn new(nodes: VecDeque<AstNode>) -> Result<Self> {
         let mut bytes = Vec::new();
         let context = Rc::new(RefCell::new(JITContext {
             promises: PromiseSet::default(),
@@ -72,14 +72,17 @@ impl JITTarget {
             Self::shallow_compile(nodes.clone(), context.clone()),
         );
 
-        Self {
+        let executable = ExecutableMemory::new(&bytes)
+            .context("Failed to create executable memory for JIT target")?;
+
+        Ok(Self {
             source: nodes,
-            executable: ExecutableMemory::new(&bytes),
+            executable,
             context,
-        }
+        })
     }
 
-    fn new_fragment(context: Rc<RefCell<JITContext>>, nodes: VecDeque<AstNode>) -> Self {
+    fn new_fragment(context: Rc<RefCell<JITContext>>, nodes: VecDeque<AstNode>) -> Result<Self> {
         let mut bytes = Vec::new();
 
         code_gen::wrapper(
@@ -87,11 +90,14 @@ impl JITTarget {
             Self::compile_loop(nodes.clone(), context.clone()),
         );
 
-        Self {
+        let executable = ExecutableMemory::new(&bytes)
+            .context("Failed to create executable memory for JIT fragment")?;
+
+        Ok(Self {
             source: nodes,
-            executable: ExecutableMemory::new(&bytes),
+            executable,
             context,
-        }
+        })
     }
 
     /// Compile a vector of AstNodes into executable bytes.
@@ -152,7 +158,8 @@ impl JITTarget {
 
         match promise {
             JITPromise::Deferred(nodes) => {
-                let mut new_target = Self::new_fragment(self.context.clone(), nodes);
+                let mut new_target = Self::new_fragment(self.context.clone(), nodes)
+                    .expect("Failed to create JIT fragment during callback");
                 return_ptr = new_target.exec(mem_ptr);
                 new_promise = Some(JITPromise::Compiled(new_target));
             }
@@ -229,7 +236,7 @@ mod tests {
     #[test]
     fn run_hello_world() {
         let ast = Ast::parse(include_str!("../../../tests/programs/hello_world.bf")).unwrap();
-        let mut jit_target = JITTarget::new(ast.data);
+        let mut jit_target = JITTarget::new(ast.data).unwrap();
         let shared_buffer = SharedBuffer::new();
         jit_target.context.borrow_mut().io_write = Box::new(shared_buffer.clone());
 
@@ -242,7 +249,7 @@ mod tests {
     #[test]
     fn run_mandelbrot() {
         let ast = Ast::parse(include_str!("../../../tests/programs/mandelbrot.bf")).unwrap();
-        let mut jit_target = JITTarget::new(ast.data);
+        let mut jit_target = JITTarget::new(ast.data).unwrap();
         let shared_buffer = SharedBuffer::new();
         jit_target.context.borrow_mut().io_write = Box::new(shared_buffer.clone());
 
@@ -258,7 +265,7 @@ mod tests {
         // This rot13 program terminates after 16 characters so we can test it. Otherwise it would
         // wait on input forever.
         let ast = Ast::parse(include_str!("../../../tests/programs/rot13-16char.bf")).unwrap();
-        let mut jit_target = JITTarget::new(ast.data);
+        let mut jit_target = JITTarget::new(ast.data).unwrap();
         let shared_buffer = SharedBuffer::new();
         jit_target.context.borrow_mut().io_write = Box::new(shared_buffer.clone());
         let in_cursor = Box::new(Cursor::new("Hello World! 123".as_bytes().to_vec()));
@@ -281,7 +288,7 @@ mod tests {
         nodes.push_back(AstNode::Set(5)); // Set current cell to 5
         nodes.push_back(AstNode::MultiplyAddTo(2, 3)); // Multiply by 3, add to cell at offset +2
 
-        let mut jit_target = JITTarget::new(nodes);
+        let mut jit_target = JITTarget::new(nodes).unwrap();
         let shared_buffer = SharedBuffer::new();
         jit_target.context.borrow_mut().io_write = Box::new(shared_buffer.clone());
 

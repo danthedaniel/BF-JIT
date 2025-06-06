@@ -1,3 +1,4 @@
+use anyhow::Result;
 use libc::{_SC_PAGESIZE, sysconf};
 use std::slice;
 use std::sync::OnceLock;
@@ -20,16 +21,15 @@ pub struct ExecutableMemory {
 }
 
 impl ExecutableMemory {
-    pub fn new(source: &[u8]) -> Self {
+    pub fn new(source: &[u8]) -> Result<Self> {
         let len = Self::calculate_length(source.len());
-        let ptr = Self::allocate_memory(len);
-
+        let ptr = Self::allocate_memory(len)?;
         let buffer = unsafe { slice::from_raw_parts_mut(ptr, len) };
         Self::fill_with_ret(buffer);
-        Self::copy_source(buffer, source);
-        Self::make_executable(buffer);
+        Self::copy_source(buffer, source)?;
+        Self::make_executable(buffer)?;
 
-        Self { ptr, len }
+        Ok(Self { ptr, len })
     }
 
     pub fn as_ptr(&self) -> *const u8 {
@@ -43,7 +43,7 @@ impl ExecutableMemory {
         buffer_size_pages * page_size
     }
 
-    fn allocate_memory(len: usize) -> *mut u8 {
+    fn allocate_memory(len: usize) -> Result<*mut u8> {
         let ptr = unsafe {
             libc::mmap(
                 std::ptr::null_mut(),
@@ -56,13 +56,13 @@ impl ExecutableMemory {
         };
 
         if ptr == libc::MAP_FAILED {
-            panic!(
+            anyhow::bail!(
                 "Failed to allocate JIT memory: {}",
                 std::io::Error::last_os_error()
             );
         }
 
-        ptr as *mut u8
+        Ok(ptr as *mut u8)
     }
 
     /// In case of a bad jump we want unpopulated areas of memory to return.
@@ -76,15 +76,19 @@ impl ExecutableMemory {
         }
     }
 
-    fn copy_source(buffer: &mut [u8], source: &[u8]) {
-        assert!(buffer.len() >= source.len(), "Source is longer than target");
+    fn copy_source(buffer: &mut [u8], source: &[u8]) -> Result<()> {
+        if buffer.len() < source.len() {
+            anyhow::bail!("Source is longer than target");
+        }
 
         for (index, &byte) in source.iter().enumerate() {
             buffer[index] = byte;
         }
+
+        Ok(())
     }
 
-    fn make_executable(buffer: &mut [u8]) {
+    fn make_executable(buffer: &mut [u8]) -> Result<()> {
         let mprotect_result = unsafe {
             libc::mprotect(
                 buffer.as_mut_ptr() as *mut libc::c_void,
@@ -94,11 +98,13 @@ impl ExecutableMemory {
         };
 
         if mprotect_result != 0 {
-            panic!(
+            anyhow::bail!(
                 "Failed to make memory executable: {}",
                 std::io::Error::last_os_error()
             );
         }
+
+        Ok(())
     }
 }
 
