@@ -237,7 +237,7 @@ Ran on [mandelbrot.bf](https://github.com/erikdubbelboer/brainfuck-jit/blob/919d
 |---|--:|
 | Naive Interpreter | 56.824s |
 | Optimized Interpreter | 19.055s |
-| Optimized JIT | 1.450s |
+| Optimized JIT | 1.06s |
 
 ### Apple M3
 
