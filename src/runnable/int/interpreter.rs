@@ -250,7 +250,7 @@ impl Runnable for Interpreter {
 }
 #[cfg(test)]
 mod tests {
-    use super::super::super::test_buffer::SharedBuffer;
+    use super::super::super::test_buffer::TestBuffer;
     use super::*;
     use crate::parser::Ast;
     use std::io::Cursor;
@@ -259,7 +259,7 @@ mod tests {
     fn run_hello_world() {
         let ast = Ast::parse(include_str!("../../../tests/programs/hello_world.bf")).unwrap();
         let mut fucker = Interpreter::new(ast.data);
-        let shared_buffer = SharedBuffer::new();
+        let shared_buffer = TestBuffer::new();
         fucker.io_write = Box::new(shared_buffer.clone());
 
         fucker.run().unwrap();
@@ -274,7 +274,7 @@ mod tests {
         // wait on input forever.
         let ast = Ast::parse(include_str!("../../../tests/programs/rot13-16char.bf")).unwrap();
         let mut fucker = Interpreter::new(ast.data);
-        let shared_buffer = SharedBuffer::new();
+        let shared_buffer = TestBuffer::new();
         fucker.io_write = Box::new(shared_buffer.clone());
         let in_cursor = Box::new(Cursor::new("Hello World! 123".as_bytes().to_vec()));
         fucker.io_read = in_cursor;

@@ -218,7 +218,7 @@ impl Runnable for JITTarget {
 
 #[cfg(test)]
 mod tests {
-    use super::super::super::test_buffer::SharedBuffer;
+    use super::super::super::test_buffer::TestBuffer;
     use super::JITTarget;
     use crate::parser::Ast;
     use crate::runnable::BF_MEMORY_SIZE;
@@ -229,7 +229,7 @@ mod tests {
     fn run_hello_world() {
         let ast = Ast::parse(include_str!("../../../tests/programs/hello_world.bf")).unwrap();
         let mut jit_target = JITTarget::new(ast.data).unwrap();
-        let shared_buffer = SharedBuffer::new();
+        let shared_buffer = TestBuffer::new();
         jit_target.context.borrow_mut().io_write = Box::new(shared_buffer.clone());
 
         jit_target.run().unwrap();
@@ -242,7 +242,7 @@ mod tests {
     fn run_mandelbrot() {
         let ast = Ast::parse(include_str!("../../../tests/programs/mandelbrot.bf")).unwrap();
         let mut jit_target = JITTarget::new(ast.data).unwrap();
-        let shared_buffer = SharedBuffer::new();
+        let shared_buffer = TestBuffer::new();
         jit_target.context.borrow_mut().io_write = Box::new(shared_buffer.clone());
 
         jit_target.run().unwrap();
@@ -258,7 +258,7 @@ mod tests {
         // wait on input forever.
         let ast = Ast::parse(include_str!("../../../tests/programs/rot13-16char.bf")).unwrap();
         let mut jit_target = JITTarget::new(ast.data).unwrap();
-        let shared_buffer = SharedBuffer::new();
+        let shared_buffer = TestBuffer::new();
         jit_target.context.borrow_mut().io_write = Box::new(shared_buffer.clone());
         let in_cursor = Box::new(Cursor::new("Hello World! 123".as_bytes().to_vec()));
         jit_target.context.borrow_mut().io_read = in_cursor;
@@ -281,7 +281,7 @@ mod tests {
         nodes.push_back(AstNode::MultiplyAddTo(2, 3)); // Multiply by 3, add to cell at offset +2
 
         let mut jit_target = JITTarget::new(nodes).unwrap();
-        let shared_buffer = SharedBuffer::new();
+        let shared_buffer = TestBuffer::new();
         jit_target.context.borrow_mut().io_write = Box::new(shared_buffer.clone());
 
         // Create a custom memory to inspect results

@@ -3,11 +3,11 @@ use std::io::{self, Write};
 use std::rc::Rc;
 
 /// Writeable buffer that tracks what was written to it. Used for testing.
-pub struct SharedBuffer {
+pub struct TestBuffer {
     inner: Rc<RefCell<Vec<u8>>>,
 }
 
-impl SharedBuffer {
+impl TestBuffer {
     pub fn new() -> Self {
         Self {
             inner: Rc::new(RefCell::new(Vec::new())),
@@ -26,7 +26,7 @@ impl SharedBuffer {
     }
 }
 
-impl Write for SharedBuffer {
+impl Write for TestBuffer {
     fn write(&mut self, buf: &[u8]) -> Result<usize, io::Error> {
         self.inner.borrow_mut().write(buf)
     }
