@@ -11,23 +11,59 @@ without any research or examination of prior art\*.
 The aarch64 implementation in `src/runnable/jit/code_gen/aarch64.rs` was written
 almost entirely by Claude 4 Opus.
 
-## Supports
+## Support
 
-- Linux x86-64
-- Linux aarch64
+### JIT
+- Linux x86-64 (GNU/musl)
+- Linux aarch64 (GNU/musl)
 - MacOS x86-64
 - MacOS aarch64
+
+### Interpreter Only
+- Linux x86
+
+## Setup
+
+If you are using VS Code or derivative editors, it's recommended to install the
+Rust Analyzer extension and configure your editor to check all supported
+targets:
+
+```shell
+# First install all supported targets so "cargo check --target $TARGET" works
+rustup target add x86_64-unknown-linux-gnu
+rustup target add aarch64-unknown-linux-gnu
+rustup target add i686-unknown-linux-gnu
+rustup target add x86_64-apple-darwin
+rustup target add aarch64-apple-darwin
+```
+
+```json5
+{
+    "rust-analyzer.cargo.allTargets": true,
+    "rust-analyzer.cargo.buildScripts.enable": true,
+    "rust-analyzer.check.targets": [
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+        "i686-unknown-linux-gnu",
+        "x86_64-apple-darwin",
+        "aarch64-apple-darwin",
+    ],
+}
+```
 
 ## Usage
 
 ```
+Fucker
+
+Usage:
   fucker [--int] <program>
-  fucker (-d | --debug) <program>
+  fucker (--ast) <program>
   fucker (-h | --help)
 
 Options:
   -h --help     Show this screen.
-  -d --debug    Display intermediate language.
+  --ast         Display intermediate language.
   --int         Use an interpreter instead of the JIT compiler.
 ```
 
