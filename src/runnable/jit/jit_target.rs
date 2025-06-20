@@ -3,11 +3,10 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::fmt;
 use std::io::{self, Read, Write};
-use std::mem;
 use std::rc::Rc;
 
 use super::code_gen;
-use super::executable_memory::ExecutableMemory;
+use super::executable_memory::{ExecutableMemory, VoidPtr};
 use super::jit_promise::{JITPromise, JITPromiseID, PromiseSet};
 use crate::parser::AstNode;
 use crate::runnable::{BF_MEMORY_SIZE, Runnable};
@@ -21,12 +20,6 @@ pub enum VTableEntry {
     Read = 1,
     Print = 2,
 }
-
-/// A type to unify all function pointers behind. Because the vtable is not used in the
-/// Rust code at all, the type is not important.
-type VoidPtr = *const ();
-/// VTable for JIT compiled code
-type VTable<const SIZE: usize> = [VoidPtr; SIZE];
 
 pub struct JITContext {
     /// All non-root JITTargets in the program
@@ -203,16 +196,15 @@ impl JITTarget {
 
     /// Execute the bytes buffer as a function.
     fn exec(&mut self, mem_ptr: *mut u8) -> *mut u8 {
-        let vtable: VTable<3> = [
-            Self::jit_callback as VoidPtr,
-            Self::read as VoidPtr,
-            Self::print as VoidPtr,
-        ];
-
-        type JitFunc = extern "C" fn(*mut u8, &mut JITTarget, &VTable<3>) -> *mut u8;
-        let func: JitFunc = unsafe { mem::transmute(self.executable.as_ptr()) };
-
-        func(mem_ptr, self, &vtable)
+        self.executable.as_fn()(
+            mem_ptr,
+            self,
+            &[
+                Self::jit_callback as VoidPtr,
+                Self::read as VoidPtr,
+                Self::print as VoidPtr,
+            ],
+        )
     }
 }
 

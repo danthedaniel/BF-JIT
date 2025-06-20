@@ -3,6 +3,8 @@ use libc::{_SC_PAGESIZE, sysconf};
 use std::slice;
 use std::sync::OnceLock;
 
+use crate::runnable::jit::JITTarget;
+
 use super::code_gen::RET;
 
 // macos needs an extra flag
@@ -12,6 +14,12 @@ const MMAP_FLAGS: i32 = libc::MAP_ANON | libc::MAP_PRIVATE | libc::MAP_JIT;
 const MMAP_FLAGS: i32 = libc::MAP_ANON | libc::MAP_PRIVATE;
 
 static PAGE_SIZE: OnceLock<usize> = OnceLock::new();
+
+/// A type to unify all function pointers behind. Because the vtable is not used in the
+/// Rust code at all, the type is not important.
+pub type VoidPtr = *const ();
+/// VTable for JIT compiled code
+type VTable<const SIZE: usize> = [VoidPtr; SIZE];
 
 /// A buffer of executable memory that properly handles platform-specific allocation
 #[derive(Debug)]
@@ -32,8 +40,8 @@ impl ExecutableMemory {
         Ok(Self { ptr, len })
     }
 
-    pub fn as_ptr(&self) -> *const u8 {
-        self.ptr
+    pub fn as_fn(&self) -> fn(*mut u8, &mut JITTarget, &VTable<3>) -> *mut u8 {
+        unsafe { std::mem::transmute(self.ptr) }
     }
 
     /// Length is an integer number of pages at least as large as the source.
