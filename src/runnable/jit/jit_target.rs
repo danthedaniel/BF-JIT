@@ -30,6 +30,16 @@ pub struct JITContext {
     pub io_write: Box<dyn Write>,
 }
 
+impl Default for JITContext {
+    fn default() -> Self {
+        Self {
+            promises: PromiseSet::default(),
+            io_read: Box::new(io::stdin()),
+            io_write: Box::new(io::stdout()),
+        }
+    }
+}
+
 /// Container for executable bytes.
 pub struct JITTarget {
     /// Original AST
@@ -54,11 +64,7 @@ impl JITTarget {
     /// Initialize a JIT compiled version of a program.
     pub fn new(nodes: VecDeque<AstNode>) -> Result<Self> {
         let mut bytes = Vec::new();
-        let context = Rc::new(RefCell::new(JITContext {
-            promises: PromiseSet::default(),
-            io_read: Box::new(io::stdin()),
-            io_write: Box::new(io::stdout()),
-        }));
+        let context = Rc::new(RefCell::new(JITContext::default()));
 
         code_gen::wrapper(
             &mut bytes,
