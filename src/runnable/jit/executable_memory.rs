@@ -26,7 +26,7 @@ impl ExecutableMemory {
         let ptr = Self::allocate_memory(len)?;
         let buffer = unsafe { slice::from_raw_parts_mut(ptr, len) };
         Self::fill_with_ret(buffer);
-        Self::copy_source(buffer, source)?;
+        Self::copy_source(buffer, source);
         Self::make_executable(buffer)?;
 
         Ok(Self { ptr, len })
@@ -68,6 +68,11 @@ impl ExecutableMemory {
     /// In case of a bad jump we want unpopulated areas of memory to return.
     fn fill_with_ret(buffer: &mut [u8]) {
         let ret_bytes = RET.to_ne_bytes();
+        assert_eq!(
+            buffer.len() % ret_bytes.len(),
+            0,
+            "Buffer length must evenly divide by the size of RET"
+        );
 
         for word in 0..(buffer.len() / ret_bytes.len()) {
             for (offset, &byte) in ret_bytes.iter().enumerate() {
@@ -76,16 +81,15 @@ impl ExecutableMemory {
         }
     }
 
-    fn copy_source(buffer: &mut [u8], source: &[u8]) -> Result<()> {
-        if buffer.len() < source.len() {
-            anyhow::bail!("Source is longer than target");
-        }
+    fn copy_source(buffer: &mut [u8], source: &[u8]) {
+        assert!(
+            buffer.len() >= source.len(),
+            "Buffer must be at least as long as source"
+        );
 
         for (index, &byte) in source.iter().enumerate() {
             buffer[index] = byte;
         }
-
-        Ok(())
     }
 
     fn make_executable(buffer: &mut [u8]) -> Result<()> {
