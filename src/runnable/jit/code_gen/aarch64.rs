@@ -258,8 +258,9 @@ pub fn aot_loop(bytes: &mut Vec<u8>, inner_loop_bytes: Vec<u8>) {
     // ldrb w8, [x19]
     emit_u32(bytes, 0x39400268);
 
+    let inner_loop_instructions = inner_loop_bytes.len() / 4;
     // cbz w8
-    let skip_offset = (inner_loop_bytes.len() / 4 + 2) as u32; // +2 for the branch back instruction
+    let skip_offset = (inner_loop_instructions + 2) as u32; // +2 for the branch back instruction
     emit_u32(bytes, 0x34000008 | (skip_offset << 5));
 
     // loop_start:
@@ -270,7 +271,7 @@ pub fn aot_loop(bytes: &mut Vec<u8>, inner_loop_bytes: Vec<u8>) {
     emit_u32(bytes, 0x39400268);
 
     // cbnz w8, loop_start
-    let loop_offset = -((bytes.len() / 4 - 1) as i32);
+    let loop_offset = -((inner_loop_instructions + 2) as i32);
     emit_u32(bytes, 0x35000008 | ((loop_offset as u32 & 0x7FFFF) << 5));
 }
 
