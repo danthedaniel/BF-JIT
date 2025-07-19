@@ -37,6 +37,7 @@ rustup target add x86_64-apple-darwin
 rustup target add aarch64-apple-darwin
 ```
 
+Add these keys to `.vscode/settings.json`:
 ```json5
 {
     "rust-analyzer.cargo.allTargets": true,
