@@ -32,7 +32,7 @@ fn run_fucker_with_input(args: &[&str], input: &str) -> std::process::Output {
     child.wait_with_output().expect("Failed to read output")
 }
 
-/// Helper function to create a temporary BrainFuck program file with unique name
+/// Helper function to create a temporary brainfuck program file with unique name
 fn create_temp_program(content: &str) -> String {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -189,11 +189,11 @@ fn test_multiple_flags_not_allowed() {
 #[test]
 fn test_program_with_comments() {
     // Create a program with comments (non-BF characters should be ignored)
-    let program_with_comments = r#"
+    let program_with_comments = r"
         This is a comment
         ++++++++[>++++++++<-]>+.  Output 'A'
         Another comment
-        "#;
+        ";
     let temp_file = create_temp_program(program_with_comments);
     let output = run_fucker(&["--int", &temp_file]); // Use interpreter for reliability
     assert!(output.status.success());

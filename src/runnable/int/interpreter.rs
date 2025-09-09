@@ -7,7 +7,7 @@ use super::instr::Instr;
 use crate::parser::AstNode;
 use crate::runnable::{BF_MEMORY_SIZE, Runnable};
 
-/// BrainFuck virtual machine
+/// brainfuck virtual machine
 pub struct Interpreter {
     program: Vec<Instr>,
     memory: Vec<u8>,
@@ -23,7 +23,7 @@ pub struct Interpreter {
 
 impl Interpreter {
     pub fn new(nodes: VecDeque<AstNode>) -> Self {
-        Interpreter {
+        Self {
             program: Self::compile(nodes),
             memory: vec![0u8; BF_MEMORY_SIZE],
             pc: 0,
@@ -48,7 +48,7 @@ impl Interpreter {
                 AstNode::AddTo(n) => instrs.push(Instr::AddTo(n)),
                 AstNode::SubFrom(n) => instrs.push(Instr::SubFrom(n)),
                 AstNode::MultiplyAddTo(offset, factor) => {
-                    instrs.push(Instr::MultiplyAddTo(offset, factor))
+                    instrs.push(Instr::MultiplyAddTo(offset, factor));
                 }
                 AstNode::CopyTo(offsets) => instrs.push(Instr::CopyTo(offsets)),
                 AstNode::Loop(vec) => {
@@ -68,7 +68,7 @@ impl Interpreter {
 
     /// Validate and calculate target memory position for operations with offsets
     fn get_target_position(&self, offset: i16) -> Result<usize> {
-        let target_pos = self.dp as isize + offset as isize;
+        let target_pos = isize::try_from(self.dp).unwrap() + offset as isize;
 
         if target_pos < 0 {
             bail!(
@@ -77,6 +77,7 @@ impl Interpreter {
             );
         }
 
+        #[allow(clippy::cast_sign_loss)]
         let target_pos = target_pos as usize;
         if target_pos >= self.memory.len() {
             bail!(
@@ -93,6 +94,7 @@ impl Interpreter {
     ///
     /// Returns Ok(true) to continue execution, Ok(false) when the program has terminated normally,
     /// or Err(_) on execution errors.
+    #[allow(clippy::too_many_lines)]
     pub fn step(&mut self) -> Result<bool> {
         // Terminate if the program counter is outside of the program.
         if self.pc >= self.program.len() {
@@ -197,8 +199,7 @@ impl Interpreter {
                     for offset in offsets {
                         let target_pos = self.get_target_position(offset).with_context(|| {
                             format!(
-                                "Invalid target position for CopyTo operation at offset {}",
-                                offset
+                                "Invalid target position for CopyTo operation at offset {offset}"
                             )
                         })?;
 
@@ -238,10 +239,10 @@ impl Runnable for Interpreter {
     fn run(&mut self) -> Result<()> {
         let result = loop {
             match self.step() {
-                Ok(true) => continue,
+                Ok(true) => {}
                 Ok(false) => break Ok(()),
                 Err(error) => break Err(error),
-            };
+            }
         };
 
         self.reset();
@@ -276,7 +277,7 @@ mod tests {
         let mut fucker = Interpreter::new(ast.data);
         let shared_buffer = TestBuffer::new();
         fucker.io_write = Box::new(shared_buffer.clone());
-        let in_cursor = Box::new(Cursor::new("Hello World! 123".as_bytes().to_vec()));
+        let in_cursor = Box::new(Cursor::new(b"Hello World! 123".to_vec()));
         fucker.io_read = in_cursor;
 
         fucker.run().unwrap();

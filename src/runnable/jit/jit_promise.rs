@@ -4,16 +4,17 @@ use std::ops::{Deref, DerefMut};
 use super::JITTarget;
 use crate::parser::AstNode;
 
+#[derive(Copy, Clone)]
 #[repr(C)]
 pub struct JITPromiseID(u16);
 
 impl JITPromiseID {
-    pub fn value(&self) -> u16 {
-        return self.0;
+    pub const fn value(self) -> u16 {
+        self.0
     }
 }
 
-/// Holds AstNodes for later compilation.
+/// Holds `AstNodes` for later compilation.
 #[derive(Debug)]
 pub enum JITPromise {
     Deferred(VecDeque<AstNode>),
@@ -21,27 +22,28 @@ pub enum JITPromise {
 }
 
 impl JITPromise {
-    pub fn source(&self) -> &VecDeque<AstNode> {
+    pub const fn source(&self) -> &VecDeque<AstNode> {
+        #[allow(clippy::match_same_arms)]
         match self {
-            JITPromise::Deferred(source) => source,
-            JITPromise::Compiled(JITTarget { source, .. }) => source,
+            Self::Deferred(source) => source,
+            Self::Compiled(JITTarget { source, .. }) => source,
         }
     }
 }
 
-/// The global set of JITPromises for a program.
+/// The global set of `JITPromises` for a program.
 #[derive(Debug, Default)]
 pub struct PromiseSet(Vec<Option<JITPromise>>);
 
 impl PromiseSet {
     /// By either searching for an equivalent promise, or creating a new one,
-    /// return a promise ID for a vector of AstNodes.
+    /// return a promise ID for a vector of `AstNodes`.
     pub fn add(&mut self, nodes: VecDeque<AstNode>) -> JITPromiseID {
         for (index, promise) in self.iter().enumerate() {
-            if let Some(promise) = promise {
-                if promise.source() == &nodes {
-                    return JITPromiseID(index as u16);
-                }
+            if let Some(promise) = promise
+                && promise.source() == &nodes
+            {
+                return JITPromiseID(u16::try_from(index).unwrap());
             }
             // It's possible for `promise` to be None here. If the call stack
             // look like:
@@ -63,8 +65,12 @@ impl PromiseSet {
         self.push(Some(JITPromise::Deferred(nodes)));
 
         let index = self.len() - 1;
-        assert!(index <= u16::MAX as usize, "Too many JIT promises (max {})", u16::MAX);
-        JITPromiseID(index as u16)
+        assert!(
+            u16::try_from(index).is_ok(),
+            "Too many JIT promises (max {})",
+            u16::MAX
+        );
+        JITPromiseID(u16::try_from(index).expect("Index out of bounds"))
     }
 }
 

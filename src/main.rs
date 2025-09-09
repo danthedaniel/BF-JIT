@@ -46,7 +46,7 @@ fn main() -> Result<()> {
         .with_context(|| format!("Failed to load program: {}", args.arg_program))?;
 
     if args.flag_ast {
-        println!("{:?}", program);
+        println!("{program:?}");
         return Ok(());
     }
 
@@ -68,7 +68,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Read a BrainFuck program's source code.
+/// Read a brainfuck program's source code.
 ///
 /// When path is "-" this will read from stdin.
 fn read_program(path: &str) -> Result<String> {
@@ -77,7 +77,7 @@ fn read_program(path: &str) -> Result<String> {
         if path == "-" {
             Box::new(stdin())
         } else {
-            Box::new(File::open(path).with_context(|| format!("Could not open file: {}", path))?)
+            Box::new(File::open(path).with_context(|| format!("Could not open file: {path}"))?)
         }
     };
 

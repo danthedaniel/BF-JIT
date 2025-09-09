@@ -1,4 +1,4 @@
-/// BrainFuck instruction
+/// brainfuck instruction
 #[derive(Clone, Debug)]
 pub enum Instr {
     /// Add to the current memory cell.

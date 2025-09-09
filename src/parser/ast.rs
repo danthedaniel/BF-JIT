@@ -1,7 +1,7 @@
 use anyhow::{Result, bail};
 use std::collections::VecDeque;
 
-/// BrainFuck AST node
+/// brainfuck AST node
 #[derive(Debug, Clone, PartialEq)]
 pub enum AstNode {
     /// Add to the current memory cell.
@@ -31,7 +31,7 @@ pub enum AstNode {
     Loop(VecDeque<AstNode>),
 }
 
-/// Container for a vector of AstNodes.
+/// Container for a vector of `AstNodes`.
 #[derive(Debug, Clone)]
 pub struct Ast {
     pub data: VecDeque<AstNode>,
@@ -109,8 +109,7 @@ impl Ast {
         // Zero loop
         if input.len() == 1 {
             match input[0] {
-                AstNode::Incr(1) => return Some(AstNode::Set(0)),
-                AstNode::Decr(1) => return Some(AstNode::Set(0)),
+                AstNode::Incr(1) | AstNode::Decr(1) => return Some(AstNode::Set(0)),
                 _ => return None,
             }
         }
@@ -121,7 +120,7 @@ impl Ast {
                 (AstNode::Decr(1), AstNode::Prev(a), AstNode::Incr(1), AstNode::Next(b))
                     if *a == *b =>
                 {
-                    let offset: i16 = (-(*a as i32)).try_into().ok()?;
+                    let offset: i16 = (-i32::from(*a)).try_into().ok()?;
                     return Some(AstNode::AddTo(offset));
                 }
                 (AstNode::Decr(1), AstNode::Next(a), AstNode::Incr(1), AstNode::Prev(b))
@@ -134,7 +133,7 @@ impl Ast {
                 (AstNode::Decr(1), AstNode::Prev(a), AstNode::Decr(1), AstNode::Next(b))
                     if *a == *b =>
                 {
-                    let offset: i16 = (-(*a as i32)).try_into().ok()?;
+                    let offset: i16 = (-i32::from(*a)).try_into().ok()?;
                     return Some(AstNode::SubFrom(offset));
                 }
                 (AstNode::Decr(1), AstNode::Next(a), AstNode::Decr(1), AstNode::Prev(b))
@@ -147,7 +146,7 @@ impl Ast {
                 (AstNode::Decr(1), AstNode::Prev(a), AstNode::Incr(n), AstNode::Next(b))
                     if *a == *b && *n > 1 =>
                 {
-                    let offset: i16 = (-(*a as i32)).try_into().ok()?;
+                    let offset: i16 = (-i32::from(*a)).try_into().ok()?;
                     return Some(AstNode::MultiplyAddTo(offset, *n));
                 }
                 (AstNode::Decr(1), AstNode::Next(a), AstNode::Incr(n), AstNode::Prev(b))
@@ -157,7 +156,7 @@ impl Ast {
                     return Some(AstNode::MultiplyAddTo(offset, *n));
                 }
                 _ => {}
-            };
+            }
         }
 
         // Check for copy loops (e.g., [->>+>+<<<])
@@ -168,7 +167,7 @@ impl Ast {
         None
     }
 
-    /// Create a CopyTo node from a copy loop
+    /// Create a `CopyTo` node from a copy loop
     fn create_copy_node(input: &VecDeque<AstNode>) -> Option<AstNode> {
         if input.is_empty() {
             return None;

@@ -33,7 +33,7 @@ static PAGE_SIZE: OnceLock<usize> = OnceLock::new();
 /// A type to unify all function pointers behind. Because the vtable is not used in the
 /// Rust code at all, the type is not important.
 pub type VoidPtr = *const ();
-/// VTable for JIT compiled code
+/// Virtual function table for JIT compiled code
 type VTable<const SIZE: usize> = [VoidPtr; SIZE];
 
 type JitCallbackFn = fn(*mut u8, &mut JITTarget, &VTable<3>) -> *mut u8;
@@ -64,18 +64,19 @@ impl ExecutableMemory {
     #[cfg(windows)]
     fn get_page_size() -> usize {
         let mut system_info = SYSTEM_INFO::default();
-        unsafe { GetSystemInfo(&mut system_info) };
+        unsafe { GetSystemInfo(&raw mut system_info) };
         system_info.dwPageSize as usize
     }
 
     #[cfg(not(windows))]
     fn get_page_size() -> usize {
-        unsafe { sysconf(_SC_PAGESIZE) as usize }
+        let page_size = unsafe { sysconf(_SC_PAGESIZE) };
+        usize::try_from(page_size).unwrap()
     }
 
     /// Length is an integer number of pages at least as large as the source.
     fn calculate_length(source_length: usize) -> usize {
-        let page_size = *PAGE_SIZE.get_or_init(|| Self::get_page_size());
+        let page_size = *PAGE_SIZE.get_or_init(Self::get_page_size);
         let buffer_size_pages = source_length.div_ceil(page_size);
         buffer_size_pages * page_size
     }
@@ -90,14 +91,14 @@ impl ExecutableMemory {
                 PAGE_READWRITE,
             )
         };
-        if ptr == std::ptr::null_mut() {
+        if ptr.is_null() {
             anyhow::bail!(
                 "Failed to allocate JIT memory: {}",
                 std::io::Error::last_os_error()
             );
         }
 
-        Ok(ptr as *mut u8)
+        Ok(ptr.cast::<u8>())
     }
 
     #[cfg(not(windows))]
@@ -120,7 +121,7 @@ impl ExecutableMemory {
             );
         }
 
-        Ok(ptr as *mut u8)
+        Ok(ptr.cast::<u8>())
     }
 
     /// In case of a bad jump we want unpopulated areas of memory to return.
@@ -155,10 +156,10 @@ impl ExecutableMemory {
         let mut old_protection: PAGE_PROTECTION_FLAGS = 0;
         let mprotect_result: BOOL = unsafe {
             VirtualProtect(
-                buffer.as_mut_ptr() as *mut _,
+                buffer.as_mut_ptr().cast::<_>(),
                 buffer.len(),
                 PAGE_EXECUTE_READ,
-                &mut old_protection,
+                &raw mut old_protection,
             )
         };
 
@@ -176,7 +177,7 @@ impl ExecutableMemory {
     fn make_executable(buffer: &mut [u8]) -> Result<()> {
         let mprotect_result = unsafe {
             libc::mprotect(
-                buffer.as_mut_ptr() as *mut libc::c_void,
+                buffer.as_mut_ptr().cast::<libc::c_void>(),
                 buffer.len(),
                 libc::PROT_READ | libc::PROT_EXEC,
             )
@@ -198,20 +199,21 @@ impl Drop for ExecutableMemory {
     fn drop(&mut self) {
         let free_result: BOOL = unsafe { VirtualFree(self.ptr as *mut _, self.len, MEM_RELEASE) };
 
-        if free_result == FALSE {
-            panic!("Failed to free memory: {}", std::io::Error::last_os_error());
-        }
+        assert!(
+            free_result != FALSE,
+            "Failed to free memory: {}",
+            std::io::Error::last_os_error()
+        );
     }
 
     #[cfg(not(windows))]
     fn drop(&mut self) {
         let munmap_result = unsafe { libc::munmap(self.ptr as *mut libc::c_void, self.len) };
 
-        if munmap_result != 0 {
-            panic!(
-                "Failed to unmap memory: {}",
-                std::io::Error::last_os_error()
-            );
-        }
+        assert!(
+            munmap_result == 0,
+            "Failed to unmap memory: {}",
+            std::io::Error::last_os_error()
+        );
     }
 }

@@ -28,3 +28,9 @@ windows-sys = { version = "0.61.0", features = [ "Win32_System", "Win32_System_M
 name = "fucker"
 doc = false
 test = true
+
+[lints.clippy]
+# Enable all clippy lints by default
+all = "warn"
+# Enable pedantic lints for stricter code quality
+pedantic = "warn"

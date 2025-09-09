@@ -22,7 +22,7 @@ pub enum VTableEntry {
 }
 
 pub struct JITContext {
-    /// All non-root JITTargets in the program
+    /// All non-root `JITTargets` in the program
     promises: PromiseSet,
     /// Reader that can be overridden to allow for input from a source other than stdin
     pub io_read: Box<dyn Read>,
@@ -66,10 +66,7 @@ impl JITTarget {
         let mut bytes = Vec::new();
         let context = Rc::new(RefCell::new(JITContext::default()));
 
-        code_gen::wrapper(
-            &mut bytes,
-            Self::shallow_compile(nodes.clone(), context.clone()),
-        );
+        code_gen::wrapper(&mut bytes, Self::shallow_compile(nodes.clone(), &context));
 
         let executable = ExecutableMemory::new(&bytes)
             .context("Failed to create executable memory for JIT target")?;
@@ -84,10 +81,7 @@ impl JITTarget {
     fn new_fragment(context: Rc<RefCell<JITContext>>, nodes: VecDeque<AstNode>) -> Result<Self> {
         let mut bytes = Vec::new();
 
-        code_gen::wrapper(
-            &mut bytes,
-            Self::compile_loop(nodes.clone(), context.clone()),
-        );
+        code_gen::wrapper(&mut bytes, Self::compile_loop(nodes.clone(), &context));
 
         let executable = ExecutableMemory::new(&bytes)
             .context("Failed to create executable memory for JIT fragment")?;
@@ -99,8 +93,8 @@ impl JITTarget {
         })
     }
 
-    /// Compile a vector of AstNodes into executable bytes.
-    fn shallow_compile(nodes: VecDeque<AstNode>, context: Rc<RefCell<JITContext>>) -> Vec<u8> {
+    /// Compile a vector of `AstNodes` into executable bytes.
+    fn shallow_compile(nodes: VecDeque<AstNode>, context: &Rc<RefCell<JITContext>>) -> Vec<u8> {
         let mut bytes = Vec::new();
 
         for node in nodes {
@@ -115,21 +109,21 @@ impl JITTarget {
                 AstNode::AddTo(n) => code_gen::add(&mut bytes, n),
                 AstNode::SubFrom(n) => code_gen::sub(&mut bytes, n),
                 AstNode::MultiplyAddTo(offset, factor) => {
-                    code_gen::multiply_add(&mut bytes, offset, factor)
+                    code_gen::multiply_add(&mut bytes, offset, factor);
                 }
                 AstNode::CopyTo(offsets) => code_gen::copy_to(&mut bytes, offsets),
                 AstNode::Loop(nodes) if nodes.len() < INLINE_THRESHOLD => {
-                    bytes.extend(Self::compile_loop(nodes, context.clone()))
+                    bytes.extend(Self::compile_loop(nodes, context));
                 }
-                AstNode::Loop(nodes) => bytes.extend(Self::defer_loop(nodes, context.clone())),
-            };
+                AstNode::Loop(nodes) => bytes.extend(Self::defer_loop(nodes, context)),
+            }
         }
 
         bytes
     }
 
     /// Perform AOT compilation on a loop.
-    fn compile_loop(nodes: VecDeque<AstNode>, context: Rc<RefCell<JITContext>>) -> Vec<u8> {
+    fn compile_loop(nodes: VecDeque<AstNode>, context: &Rc<RefCell<JITContext>>) -> Vec<u8> {
         let mut bytes = Vec::new();
 
         code_gen::aot_loop(&mut bytes, Self::shallow_compile(nodes, context));
@@ -138,7 +132,7 @@ impl JITTarget {
     }
 
     /// Perform JIT compilation on a loop.
-    fn defer_loop(nodes: VecDeque<AstNode>, context: Rc<RefCell<JITContext>>) -> Vec<u8> {
+    fn defer_loop(nodes: VecDeque<AstNode>, context: &Rc<RefCell<JITContext>>) -> Vec<u8> {
         let mut bytes = Vec::new();
 
         code_gen::jit_loop(&mut bytes, context.borrow_mut().promises.add(nodes));
@@ -166,7 +160,7 @@ impl JITTarget {
                 return_ptr = jit_target.exec(mem_ptr);
                 new_promise = Some(promise);
             }
-        };
+        }
 
         self.context.borrow_mut().promises[promise_id.value() as usize] = new_promise;
 
@@ -179,7 +173,7 @@ impl JITTarget {
         let write_result = self.context.borrow_mut().io_write.write_all(&buffer);
 
         if let Err(error) = write_result {
-            panic!("Failed to write to output: {}", error);
+            panic!("Failed to write to output: {error}");
         }
     }
 
@@ -194,7 +188,7 @@ impl JITTarget {
                 return b'\n';
             }
 
-            panic!("Failed to read from input: {}", error);
+            panic!("Failed to read from input: {error}");
         }
 
         buffer[0]
@@ -266,7 +260,7 @@ mod tests {
         let mut jit_target = JITTarget::new(ast.data).unwrap();
         let shared_buffer = TestBuffer::new();
         jit_target.context.borrow_mut().io_write = Box::new(shared_buffer.clone());
-        let in_cursor = Box::new(Cursor::new("Hello World! 123".as_bytes().to_vec()));
+        let in_cursor = Box::new(Cursor::new(b"Hello World! 123".to_vec()));
         jit_target.context.borrow_mut().io_read = in_cursor;
 
         jit_target.run().unwrap();

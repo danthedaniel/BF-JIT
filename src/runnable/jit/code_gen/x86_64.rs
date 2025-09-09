@@ -122,7 +122,7 @@ pub fn incr(bytes: &mut Vec<u8>, n: u8) {
 }
 
 pub fn next(bytes: &mut Vec<u8>, n: u16) {
-    let n_u32 = n as u32;
+    let n_u32 = u32::from(n);
     let n_bytes = n_u32.to_ne_bytes();
 
     // add    r10,n
@@ -136,7 +136,7 @@ pub fn next(bytes: &mut Vec<u8>, n: u16) {
 }
 
 pub fn prev(bytes: &mut Vec<u8>, n: u16) {
-    let n_u32 = n as u32;
+    let n_u32 = u32::from(n);
     let n_bytes = n_u32.to_ne_bytes();
 
     // sub    r10,n
@@ -254,7 +254,7 @@ pub fn add(bytes: &mut Vec<u8>, offset: i16) {
 
     // Set r13 to the offset (sign-extended from 16 to 64 bits).
     // For 16-bit values, we can use mov with sign-extension
-    let offset_i64 = offset as i64;
+    let offset_i64 = i64::from(offset);
     let offset_bytes = offset_i64.to_ne_bytes();
 
     // movabs r13,offset
@@ -293,7 +293,7 @@ pub fn sub(bytes: &mut Vec<u8>, offset: i16) {
     bytes.push(0x02);
 
     // Set r13 to the offset (sign-extended from 16 to 64 bits).
-    let offset_i64 = offset as i64;
+    let offset_i64 = i64::from(offset);
     let offset_bytes = offset_i64.to_ne_bytes();
 
     // movabs r13,offset
@@ -324,7 +324,7 @@ pub fn sub(bytes: &mut Vec<u8>, offset: i16) {
 }
 
 pub fn aot_loop(bytes: &mut Vec<u8>, inner_loop_bytes: Vec<u8>) {
-    let inner_loop_size = inner_loop_bytes.len() as i32;
+    let inner_loop_size = i32::try_from(inner_loop_bytes.len()).unwrap();
 
     let end_loop_size: i32 = 10; // Bytes
     let byte_offset = inner_loop_size + end_loop_size;
@@ -437,7 +437,7 @@ pub fn multiply_add(bytes: &mut Vec<u8>, offset: i16, factor: u8) {
     bytes.push(0x00);
 
     // Set r13 to the offset (sign-extended from 16 to 64 bits).
-    let offset_i64 = offset as i64;
+    let offset_i64 = i64::from(offset);
     let offset_bytes = offset_i64.to_ne_bytes();
 
     // movabs r13,offset
@@ -477,7 +477,7 @@ pub fn copy_to(bytes: &mut Vec<u8>, offsets: Vec<i16>) {
 
     for offset in offsets {
         // Set r13 to the offset (sign-extended from 16 to 64 bits).
-        let offset_i64 = offset as i64;
+        let offset_i64 = i64::from(offset);
         let offset_bytes = offset_i64.to_ne_bytes();
 
         // movabs r13,offset
