@@ -3,6 +3,33 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// A temporary file that automatically cleans up when dropped
+struct TempFile {
+    path: String,
+}
+
+impl TempFile {
+    fn new(content: &str) -> Self {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_file = format!("/tmp/test_program_{}_{}.bf", std::process::id(), timestamp);
+        fs::write(&temp_file, content).expect("Failed to write temp file");
+        TempFile { path: temp_file }
+    }
+
+    fn path(&self) -> &str {
+        &self.path
+    }
+}
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        fs::remove_file(&self.path).ok();
+    }
+}
+
 /// Helper function to run the fucker binary with given arguments
 fn run_fucker(args: &[&str]) -> std::process::Output {
     Command::new("cargo")
@@ -30,17 +57,6 @@ fn run_fucker_with_input(args: &[&str], input: &str) -> std::process::Output {
     }
 
     child.wait_with_output().expect("Failed to read output")
-}
-
-/// Helper function to create a temporary BrainFuck program file with unique name
-fn create_temp_program(content: &str) -> String {
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let temp_file = format!("/tmp/test_program_{}_{}.bf", std::process::id(), timestamp);
-    fs::write(&temp_file, content).expect("Failed to write temp file");
-    temp_file
 }
 
 #[test]
@@ -91,34 +107,31 @@ fn test_nonexistent_file() {
 #[test]
 #[cfg(feature = "jit")]
 fn test_invalid_syntax() {
-    let temp_file = create_temp_program("++[+"); // Unmatched bracket
-    let output = run_fucker(&[&temp_file]);
+    let temp_file = TempFile::new("++[+"); // Unmatched bracket
+    let output = run_fucker(&[temp_file.path()]);
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("Failed to load program"));
-    fs::remove_file(temp_file).ok();
 }
 
 #[test]
 #[cfg(feature = "jit")]
 fn test_empty_program() {
-    let temp_file = create_temp_program("");
-    let output = run_fucker(&[&temp_file]);
+    let temp_file = TempFile::new("");
+    let output = run_fucker(&[temp_file.path()]);
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(stdout, "");
-    fs::remove_file(temp_file).ok();
 }
 
 #[test]
 fn test_simple_output_program_interpreter() {
     // Simple program that outputs 'A' (ASCII 65) - use interpreter for reliability
-    let temp_file = create_temp_program("++++++++[>++++++++<-]>+.");
-    let output = run_fucker(&["--int", &temp_file]);
+    let temp_file = TempFile::new("++++++++[>++++++++<-]>+.");
+    let output = run_fucker(&["--int", temp_file.path()]);
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(stdout, "A");
-    fs::remove_file(temp_file).ok();
 }
 
 #[test]
@@ -189,17 +202,16 @@ fn test_multiple_flags_not_allowed() {
 #[test]
 fn test_program_with_comments() {
     // Create a program with comments (non-BF characters should be ignored)
-    let program_with_comments = r#"
+    let program_with_comments = r"
         This is a comment
         ++++++++[>++++++++<-]>+.  Output 'A'
         Another comment
-        "#;
-    let temp_file = create_temp_program(program_with_comments);
-    let output = run_fucker(&["--int", &temp_file]); // Use interpreter for reliability
+        ";
+    let temp_file = TempFile::new(program_with_comments);
+    let output = run_fucker(&["--int", temp_file.path()]); // Use interpreter for reliability
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(stdout, "A");
-    fs::remove_file(temp_file).ok();
 }
 
 #[test]
@@ -215,37 +227,33 @@ fn test_program_with_input_output_interpreter() {
     // Create a simple echo program: read one character and output it
     // Use interpreter for input/output tests
     let echo_program = ",.";
-    let temp_file = create_temp_program(echo_program);
-    let output = run_fucker_with_input(&["--int", &temp_file], "X");
+    let temp_file = TempFile::new(echo_program);
+    let output = run_fucker_with_input(&["--int", temp_file.path()], "X");
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(stdout, "X");
-    fs::remove_file(temp_file).ok();
 }
 
 #[test]
 fn test_debug_shows_ast_structure() {
     // Test that ast flag shows the AST structure
     let simple_program = "+++.";
-    let temp_file = create_temp_program(simple_program);
-    let output = run_fucker(&["--ast", &temp_file]);
+    let temp_file = TempFile::new(simple_program);
+    let output = run_fucker(&["--ast", temp_file.path()]);
     assert!(output.status.success());
+
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // Should contain AST structure elements
-    assert!(stdout.contains("Ast"));
-    assert!(stdout.contains("data"));
-    fs::remove_file(temp_file).ok();
+    assert_eq!(stdout, "[Incr(3), Print]\n");
 }
 
 #[test]
 fn test_interpreter_flag_with_simple_program() {
     // Test interpreter flag works with a simple program
-    let temp_file = create_temp_program("++++++++[>++++++++<-]>+.");
-    let output = run_fucker(&["--int", &temp_file]);
+    let temp_file = TempFile::new("++++++++[>++++++++<-]>+.");
+    let output = run_fucker(&["--int", temp_file.path()]);
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(stdout, "A");
-    fs::remove_file(temp_file).ok();
 }
 
 #[test]
@@ -262,10 +270,9 @@ fn test_error_message_format() {
 #[cfg(feature = "jit")]
 fn test_bracket_mismatch_error() {
     // Test specific error for bracket mismatch
-    let temp_file = create_temp_program("++[++");
-    let output = run_fucker(&[&temp_file]);
+    let temp_file = TempFile::new("++[++");
+    let output = run_fucker(&[temp_file.path()]);
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("Unmatched '[' bracket"));
-    fs::remove_file(temp_file).ok();
 }

@@ -1,8 +1,5 @@
-extern crate libc;
-
 #[macro_use]
 extern crate serde_derive;
-extern crate docopt;
 
 mod parser;
 mod runnable;
@@ -12,7 +9,7 @@ use docopt::Docopt;
 use std::fs::File;
 use std::io::{Read, stdin};
 
-use parser::Ast;
+use parser::AstNode;
 use runnable::Runnable;
 use runnable::int::Interpreter;
 #[cfg(feature = "jit")]
@@ -45,16 +42,16 @@ fn main() -> Result<()> {
         .unwrap_or_else(|e| e.exit());
 
     let program = read_program(&args.arg_program)
-        .and_then(|source| Ast::parse(&source))
+        .and_then(|source| AstNode::parse(&source))
         .with_context(|| format!("Failed to load program: {}", args.arg_program))?;
 
     if args.flag_ast {
-        println!("{:?}", program);
+        println!("{program:?}");
         return Ok(());
     }
 
     let mut runnable: Box<dyn Runnable> = if args.flag_int {
-        Box::new(Interpreter::new(program.data))
+        Box::new(Interpreter::new(program))
     } else {
         #[cfg(not(feature = "jit"))]
         {
@@ -62,7 +59,7 @@ fn main() -> Result<()> {
         }
 
         #[cfg(feature = "jit")]
-        Box::new(JITTarget::new(program.data)?)
+        Box::new(JITTarget::new(program)?)
     };
 
     runnable
@@ -71,7 +68,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Read a BrainFuck program's source code.
+/// Read a brainfuck program's source code.
 ///
 /// When path is "-" this will read from stdin.
 fn read_program(path: &str) -> Result<String> {
@@ -80,7 +77,7 @@ fn read_program(path: &str) -> Result<String> {
         if path == "-" {
             Box::new(stdin())
         } else {
-            Box::new(File::open(path).with_context(|| format!("Could not open file: {}", path))?)
+            Box::new(File::open(path).with_context(|| format!("Could not open file: {path}"))?)
         }
     };
 

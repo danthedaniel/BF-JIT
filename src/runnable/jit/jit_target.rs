@@ -9,20 +9,14 @@ use super::code_gen;
 use super::executable_memory::{ExecutableMemory, VoidPtr};
 use super::jit_promise::{JITPromise, JITPromiseID, PromiseSet};
 use crate::parser::AstNode;
+use crate::runnable::jit::executable_memory::VTable;
 use crate::runnable::{BF_MEMORY_SIZE, Runnable};
 
 /// Set arbitrarily
 const INLINE_THRESHOLD: usize = 0x16;
 
-/// Indexes into the vtable passed into JIT compiled code
-pub enum VTableEntry {
-    JITCallback = 0,
-    Read = 1,
-    Print = 2,
-}
-
 pub struct JITContext {
-    /// All non-root JITTargets in the program
+    /// All non-root `JITTargets` in the program
     promises: PromiseSet,
     /// Reader that can be overridden to allow for input from a source other than stdin
     pub io_read: Box<dyn Read>,
@@ -47,7 +41,7 @@ pub struct JITTarget {
     /// Executable bytes buffer
     executable: ExecutableMemory,
     /// Globals for the whole program
-    pub context: Rc<RefCell<JITContext>>,
+    context: Rc<RefCell<JITContext>>,
 }
 
 impl fmt::Debug for JITTarget {
@@ -62,20 +56,17 @@ impl fmt::Debug for JITTarget {
 
 impl JITTarget {
     /// Initialize a JIT compiled version of a program.
-    pub fn new(nodes: VecDeque<AstNode>) -> Result<Self> {
+    pub fn new(ast: VecDeque<AstNode>) -> Result<Self> {
         let mut bytes = Vec::new();
         let context = Rc::new(RefCell::new(JITContext::default()));
 
-        code_gen::wrapper(
-            &mut bytes,
-            Self::shallow_compile(nodes.clone(), context.clone()),
-        );
+        code_gen::wrapper(&mut bytes, Self::shallow_compile(ast.clone(), &context));
 
         let executable = ExecutableMemory::new(&bytes)
             .context("Failed to create executable memory for JIT target")?;
 
         Ok(Self {
-            source: nodes,
+            source: ast,
             executable,
             context,
         })
@@ -84,10 +75,7 @@ impl JITTarget {
     fn new_fragment(context: Rc<RefCell<JITContext>>, nodes: VecDeque<AstNode>) -> Result<Self> {
         let mut bytes = Vec::new();
 
-        code_gen::wrapper(
-            &mut bytes,
-            Self::compile_loop(nodes.clone(), context.clone()),
-        );
+        code_gen::wrapper(&mut bytes, Self::compile_loop(nodes.clone(), &context));
 
         let executable = ExecutableMemory::new(&bytes)
             .context("Failed to create executable memory for JIT fragment")?;
@@ -99,8 +87,8 @@ impl JITTarget {
         })
     }
 
-    /// Compile a vector of AstNodes into executable bytes.
-    fn shallow_compile(nodes: VecDeque<AstNode>, context: Rc<RefCell<JITContext>>) -> Vec<u8> {
+    /// Compile a vector of `AstNodes` into executable bytes.
+    fn shallow_compile(nodes: VecDeque<AstNode>, context: &Rc<RefCell<JITContext>>) -> Vec<u8> {
         let mut bytes = Vec::new();
 
         for node in nodes {
@@ -112,24 +100,23 @@ impl JITTarget {
                 AstNode::Print => code_gen::print(&mut bytes),
                 AstNode::Read => code_gen::read(&mut bytes),
                 AstNode::Set(n) => code_gen::set(&mut bytes, n),
-                AstNode::AddTo(n) => code_gen::add(&mut bytes, n),
-                AstNode::SubFrom(n) => code_gen::sub(&mut bytes, n),
                 AstNode::MultiplyAddTo(offset, factor) => {
-                    code_gen::multiply_add(&mut bytes, offset, factor)
+                    code_gen::multiply_add(&mut bytes, offset, factor);
                 }
-                AstNode::CopyTo(offsets) => code_gen::copy_to(&mut bytes, offsets),
+                AstNode::AddTo(offsets) => code_gen::add_to(&mut bytes, offsets),
+                AstNode::SubFrom(offsets) => code_gen::sub_from(&mut bytes, offsets),
                 AstNode::Loop(nodes) if nodes.len() < INLINE_THRESHOLD => {
-                    bytes.extend(Self::compile_loop(nodes, context.clone()))
+                    bytes.extend(Self::compile_loop(nodes, context));
                 }
-                AstNode::Loop(nodes) => bytes.extend(Self::defer_loop(nodes, context.clone())),
-            };
+                AstNode::Loop(nodes) => bytes.extend(Self::defer_loop(nodes, context)),
+            }
         }
 
         bytes
     }
 
     /// Perform AOT compilation on a loop.
-    fn compile_loop(nodes: VecDeque<AstNode>, context: Rc<RefCell<JITContext>>) -> Vec<u8> {
+    fn compile_loop(nodes: VecDeque<AstNode>, context: &Rc<RefCell<JITContext>>) -> Vec<u8> {
         let mut bytes = Vec::new();
 
         code_gen::aot_loop(&mut bytes, Self::shallow_compile(nodes, context));
@@ -138,7 +125,7 @@ impl JITTarget {
     }
 
     /// Perform JIT compilation on a loop.
-    fn defer_loop(nodes: VecDeque<AstNode>, context: Rc<RefCell<JITContext>>) -> Vec<u8> {
+    fn defer_loop(nodes: VecDeque<AstNode>, context: &Rc<RefCell<JITContext>>) -> Vec<u8> {
         let mut bytes = Vec::new();
 
         code_gen::jit_loop(&mut bytes, context.borrow_mut().promises.add(nodes));
@@ -149,9 +136,12 @@ impl JITTarget {
     /// Callback passed into compiled code. Allows for deferred compilation
     /// targets to be compiled, ran, and later re-ran.
     extern "C" fn jit_callback(&mut self, promise_id: JITPromiseID, mem_ptr: *mut u8) -> *mut u8 {
-        let mut promise = self.context.borrow_mut().promises[promise_id.value() as usize]
+        let promise_index = usize::from(promise_id.value());
+        let mut context = self.context.borrow_mut();
+        let mut promise = context.promises[promise_index]
             .take()
             .expect("Someone forgot to put a promise back");
+
         let return_ptr;
         let new_promise;
 
@@ -166,9 +156,9 @@ impl JITTarget {
                 return_ptr = jit_target.exec(mem_ptr);
                 new_promise = Some(promise);
             }
-        };
+        }
 
-        self.context.borrow_mut().promises[promise_id.value() as usize] = new_promise;
+        context.promises[promise_index] = new_promise;
 
         return_ptr
     }
@@ -179,7 +169,7 @@ impl JITTarget {
         let write_result = self.context.borrow_mut().io_write.write_all(&buffer);
 
         if let Err(error) = write_result {
-            panic!("Failed to write to output: {}", error);
+            panic!("Failed to write to output: {error}");
         }
     }
 
@@ -194,7 +184,7 @@ impl JITTarget {
                 return b'\n';
             }
 
-            panic!("Failed to read from input: {}", error);
+            panic!("Failed to read from input: {error}");
         }
 
         buffer[0]
@@ -202,15 +192,13 @@ impl JITTarget {
 
     /// Execute the bytes buffer as a function.
     fn exec(&mut self, mem_ptr: *mut u8) -> *mut u8 {
-        self.executable.as_fn()(
-            mem_ptr,
-            self,
-            &[
-                Self::jit_callback as VoidPtr,
-                Self::read as VoidPtr,
-                Self::print as VoidPtr,
-            ],
-        )
+        let vtable: VTable<3> = [
+            Self::jit_callback as VoidPtr,
+            Self::read as VoidPtr,
+            Self::print as VoidPtr,
+        ];
+
+        self.executable.as_fn()(mem_ptr, self, &vtable)
     }
 }
 
@@ -226,15 +214,15 @@ impl Runnable for JITTarget {
 mod tests {
     use super::super::super::test_buffer::TestBuffer;
     use super::JITTarget;
-    use crate::parser::Ast;
+    use crate::parser::AstNode;
     use crate::runnable::BF_MEMORY_SIZE;
     use crate::runnable::Runnable;
     use std::io::Cursor;
 
     #[test]
     fn run_hello_world() {
-        let ast = Ast::parse(include_str!("../../../tests/programs/hello_world.bf")).unwrap();
-        let mut jit_target = JITTarget::new(ast.data).unwrap();
+        let ast = AstNode::parse(include_str!("../../../tests/programs/hello_world.bf")).unwrap();
+        let mut jit_target = JITTarget::new(ast).unwrap();
         let shared_buffer = TestBuffer::new();
         jit_target.context.borrow_mut().io_write = Box::new(shared_buffer.clone());
 
@@ -246,8 +234,8 @@ mod tests {
 
     #[test]
     fn run_mandelbrot() {
-        let ast = Ast::parse(include_str!("../../../tests/programs/mandelbrot.bf")).unwrap();
-        let mut jit_target = JITTarget::new(ast.data).unwrap();
+        let ast = AstNode::parse(include_str!("../../../tests/programs/mandelbrot.bf")).unwrap();
+        let mut jit_target = JITTarget::new(ast).unwrap();
         let shared_buffer = TestBuffer::new();
         jit_target.context.borrow_mut().io_write = Box::new(shared_buffer.clone());
 
@@ -262,11 +250,11 @@ mod tests {
     fn run_rot13() {
         // This rot13 program terminates after 16 characters so we can test it. Otherwise it would
         // wait on input forever.
-        let ast = Ast::parse(include_str!("../../../tests/programs/rot13-16char.bf")).unwrap();
-        let mut jit_target = JITTarget::new(ast.data).unwrap();
+        let ast = AstNode::parse(include_str!("../../../tests/programs/rot13-16char.bf")).unwrap();
+        let mut jit_target = JITTarget::new(ast).unwrap();
         let shared_buffer = TestBuffer::new();
         jit_target.context.borrow_mut().io_write = Box::new(shared_buffer.clone());
-        let in_cursor = Box::new(Cursor::new("Hello World! 123".as_bytes().to_vec()));
+        let in_cursor = Box::new(Cursor::new(b"Hello World! 123".to_vec()));
         jit_target.context.borrow_mut().io_read = in_cursor;
 
         jit_target.run().unwrap();

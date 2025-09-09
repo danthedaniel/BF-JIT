@@ -7,7 +7,7 @@ use crate::runnable::jit::JITTarget;
 
 use super::code_gen::RET;
 
-// macos needs an extra flag
+// Platform-specific mmap flags
 #[cfg(target_os = "macos")]
 const MMAP_FLAGS: i32 = libc::MAP_ANON | libc::MAP_PRIVATE | libc::MAP_JIT;
 #[cfg(target_os = "linux")]
@@ -18,8 +18,17 @@ static PAGE_SIZE: OnceLock<usize> = OnceLock::new();
 /// A type to unify all function pointers behind. Because the vtable is not used in the
 /// Rust code at all, the type is not important.
 pub type VoidPtr = *const ();
-/// VTable for JIT compiled code
-type VTable<const SIZE: usize> = [VoidPtr; SIZE];
+/// Virtual function table for JIT compiled code
+pub type VTable<const SIZE: usize> = [VoidPtr; SIZE];
+
+/// Indexes into the vtable passed into JIT compiled code
+pub enum VTableEntry {
+    JITCallback = 0,
+    Read = 1,
+    Print = 2,
+}
+
+type JitCallbackFn = extern "C" fn(*mut u8, &mut JITTarget, &VTable<3>) -> *mut u8;
 
 /// A buffer of executable memory that properly handles platform-specific allocation
 #[derive(Debug)]
@@ -40,14 +49,19 @@ impl ExecutableMemory {
         Ok(Self { ptr, len })
     }
 
-    pub fn as_fn(&self) -> fn(*mut u8, &mut JITTarget, &VTable<3>) -> *mut u8 {
+    pub fn as_fn(&self) -> JitCallbackFn {
         unsafe { std::mem::transmute(self.ptr) }
     }
 
-    /// Length is an integer number of pages at least as large as the source.
+    fn get_page_size_bytes() -> usize {
+        let page_size = unsafe { sysconf(_SC_PAGESIZE) };
+        usize::try_from(page_size).unwrap()
+    }
+
     fn calculate_length(source_length: usize) -> usize {
-        let page_size = *PAGE_SIZE.get_or_init(|| unsafe { sysconf(_SC_PAGESIZE) as usize });
+        let page_size = *PAGE_SIZE.get_or_init(Self::get_page_size_bytes);
         let buffer_size_pages = source_length.div_ceil(page_size);
+
         buffer_size_pages * page_size
     }
 
@@ -70,13 +84,13 @@ impl ExecutableMemory {
             );
         }
 
-        Ok(ptr as *mut u8)
+        Ok(ptr.cast::<u8>())
     }
 
     /// In case of a bad jump we want unpopulated areas of memory to return.
     fn fill_with_ret(buffer: &mut [u8]) {
         let ret_bytes = RET.to_ne_bytes();
-        assert_eq!(
+        debug_assert_eq!(
             buffer.len() % ret_bytes.len(),
             0,
             "Buffer length must evenly divide by the size of RET"
@@ -90,7 +104,7 @@ impl ExecutableMemory {
     }
 
     fn copy_source(buffer: &mut [u8], source: &[u8]) {
-        assert!(
+        debug_assert!(
             buffer.len() >= source.len(),
             "Buffer must be at least as long as source"
         );
@@ -103,7 +117,7 @@ impl ExecutableMemory {
     fn make_executable(buffer: &mut [u8]) -> Result<()> {
         let mprotect_result = unsafe {
             libc::mprotect(
-                buffer.as_mut_ptr() as *mut libc::c_void,
+                buffer.as_mut_ptr().cast::<libc::c_void>(),
                 buffer.len(),
                 libc::PROT_READ | libc::PROT_EXEC,
             )
@@ -124,11 +138,11 @@ impl Drop for ExecutableMemory {
     fn drop(&mut self) {
         let munmap_result = unsafe { libc::munmap(self.ptr as *mut libc::c_void, self.len) };
 
-        if munmap_result != 0 {
-            panic!(
-                "Failed to unmap memory: {}",
-                std::io::Error::last_os_error()
-            );
-        }
+        assert_eq!(
+            munmap_result,
+            0,
+            "Failed to unmap memory: {}",
+            std::io::Error::last_os_error()
+        );
     }
 }

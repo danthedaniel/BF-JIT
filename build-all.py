@@ -23,11 +23,7 @@ def check_command(command: str) -> bool:
 def run_command(command: List[str]) -> bool:
     """Run a build command and return True if successful."""
     try:
-        result = subprocess.run(
-            command,
-            capture_output=False,
-            check=True
-        )
+        result = subprocess.run(command, capture_output=False, check=True)
         return result.returncode == 0
     except subprocess.CalledProcessError:
         return False
@@ -39,20 +35,26 @@ def main():
     # Check prerequisites
     if not check_command("cargo"):
         print("cargo could not be found, install it first", file=sys.stderr)
-        print('curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh', file=sys.stderr)
+        print(
+            'curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh',
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     if not check_command("cross"):
         print("cross could not be found, install it first", file=sys.stderr)
-        print("cargo install cross --git https://github.com/cross-rs/cross", file=sys.stderr)
+        print(
+            "cargo install cross --git https://github.com/cross-rs/cross",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     for target in TARGETS:
         if "linux" in target:
-            success = run_command(["cross", "build", "--target", target])
+            success = run_command(["cross", "build", "--release", "--target", target])
             build_results[target] = "SUCCESS" if success else "FAILED"
         elif "apple" in target:
-            success = run_command(["cargo", "build", "--target", target])
+            success = run_command(["cargo", "build", "--release", "--target", target])
             build_results[target] = "SUCCESS" if success else "FAILED"
         else:
             build_results[target] = "FAILED (unknown target)"

@@ -1,8 +1,16 @@
+use crate::runnable::jit::executable_memory::VTableEntry;
 use crate::runnable::jit::jit_promise::JITPromiseID;
-use crate::runnable::jit::jit_target::VTableEntry;
 
 pub const RET: u8 = 0xc3;
 const PTR_SIZE: u8 = 8;
+
+// Register usage:
+// r10 - BrainFuck memory pointer
+// r11 - JITTarget pointer
+// r12 - VTable pointer
+// r13 - First temporary register
+// r14 - Second temporary register
+// r15 - Third temporary register
 
 fn callee_save_to_stack(bytes: &mut Vec<u8>) {
     // push   rbx
@@ -122,7 +130,7 @@ pub fn incr(bytes: &mut Vec<u8>, n: u8) {
 }
 
 pub fn next(bytes: &mut Vec<u8>, n: u16) {
-    let n_u32 = n as u32;
+    let n_u32 = u32::from(n);
     let n_bytes = n_u32.to_ne_bytes();
 
     // add    r10,n
@@ -136,7 +144,7 @@ pub fn next(bytes: &mut Vec<u8>, n: u16) {
 }
 
 pub fn prev(bytes: &mut Vec<u8>, n: u16) {
-    let n_u32 = n as u32;
+    let n_u32 = u32::from(n);
     let n_bytes = n_u32.to_ne_bytes();
 
     // sub    r10,n
@@ -244,87 +252,8 @@ pub fn set(bytes: &mut Vec<u8>, value: u8) {
     bytes.push(value);
 }
 
-pub fn add(bytes: &mut Vec<u8>, offset: i16) {
-    // Copy the current cell into EAX.
-    // movzx  eax,BYTE PTR [r10]
-    bytes.push(0x41);
-    bytes.push(0x0f);
-    bytes.push(0xb6);
-    bytes.push(0x02);
-
-    // Set r13 to the offset (sign-extended from 16 to 64 bits).
-    // For 16-bit values, we can use mov with sign-extension
-    let offset_i64 = offset as i64;
-    let offset_bytes = offset_i64.to_ne_bytes();
-
-    // movabs r13,offset
-    bytes.push(0x49);
-    bytes.push(0xbd);
-    bytes.push(offset_bytes[0]);
-    bytes.push(offset_bytes[1]);
-    bytes.push(offset_bytes[2]);
-    bytes.push(offset_bytes[3]);
-    bytes.push(offset_bytes[4]);
-    bytes.push(offset_bytes[5]);
-    bytes.push(offset_bytes[6]);
-    bytes.push(offset_bytes[7]);
-
-    // Add the current cell (now in EAX) to the cell at the offset.
-    // add    BYTE PTR [r10+r13],al
-    bytes.push(0x43);
-    bytes.push(0x00);
-    bytes.push(0x04);
-    bytes.push(0x2a);
-
-    // Set the current memory cell to 0.
-    // mov    BYTE PTR [r10],0
-    bytes.push(0x41);
-    bytes.push(0xc6);
-    bytes.push(0x02);
-    bytes.push(0x00);
-}
-
-pub fn sub(bytes: &mut Vec<u8>, offset: i16) {
-    // Copy the current cell into EAX.
-    // movzx  eax,BYTE PTR [r10]
-    bytes.push(0x41);
-    bytes.push(0x0f);
-    bytes.push(0xb6);
-    bytes.push(0x02);
-
-    // Set r13 to the offset (sign-extended from 16 to 64 bits).
-    let offset_i64 = offset as i64;
-    let offset_bytes = offset_i64.to_ne_bytes();
-
-    // movabs r13,offset
-    bytes.push(0x49);
-    bytes.push(0xbd);
-    bytes.push(offset_bytes[0]);
-    bytes.push(offset_bytes[1]);
-    bytes.push(offset_bytes[2]);
-    bytes.push(offset_bytes[3]);
-    bytes.push(offset_bytes[4]);
-    bytes.push(offset_bytes[5]);
-    bytes.push(offset_bytes[6]);
-    bytes.push(offset_bytes[7]);
-
-    // Subtract the current cell (now in EAX) from the cell at the offset.
-    // sub    BYTE PTR [r10+r13],al
-    bytes.push(0x43);
-    bytes.push(0x28);
-    bytes.push(0x04);
-    bytes.push(0x2a);
-
-    // Set the current memory cell to 0.
-    // mov    BYTE PTR [r10],0
-    bytes.push(0x41);
-    bytes.push(0xc6);
-    bytes.push(0x02);
-    bytes.push(0x00);
-}
-
 pub fn aot_loop(bytes: &mut Vec<u8>, inner_loop_bytes: Vec<u8>) {
-    let inner_loop_size = inner_loop_bytes.len() as i32;
+    let inner_loop_size = i32::try_from(inner_loop_bytes.len()).unwrap();
 
     let end_loop_size: i32 = 10; // Bytes
     let byte_offset = inner_loop_size + end_loop_size;
@@ -437,7 +366,7 @@ pub fn multiply_add(bytes: &mut Vec<u8>, offset: i16, factor: u8) {
     bytes.push(0x00);
 
     // Set r13 to the offset (sign-extended from 16 to 64 bits).
-    let offset_i64 = offset as i64;
+    let offset_i64 = i64::from(offset);
     let offset_bytes = offset_i64.to_ne_bytes();
 
     // movabs r13,offset
@@ -467,7 +396,7 @@ pub fn multiply_add(bytes: &mut Vec<u8>, offset: i16, factor: u8) {
     bytes.push(0x00);
 }
 
-pub fn copy_to(bytes: &mut Vec<u8>, offsets: Vec<i16>) {
+pub fn add_to(bytes: &mut Vec<u8>, offsets: Vec<i16>) {
     // Copy the current cell into EAX.
     // movzx  eax,BYTE PTR [r10]
     bytes.push(0x41);
@@ -477,7 +406,7 @@ pub fn copy_to(bytes: &mut Vec<u8>, offsets: Vec<i16>) {
 
     for offset in offsets {
         // Set r13 to the offset (sign-extended from 16 to 64 bits).
-        let offset_i64 = offset as i64;
+        let offset_i64 = i64::from(offset);
         let offset_bytes = offset_i64.to_ne_bytes();
 
         // movabs r13,offset
@@ -496,6 +425,47 @@ pub fn copy_to(bytes: &mut Vec<u8>, offsets: Vec<i16>) {
         // add    BYTE PTR [r10+r13],al
         bytes.push(0x43);
         bytes.push(0x00);
+        bytes.push(0x04);
+        bytes.push(0x2a);
+    }
+
+    // Set the current memory cell to 0.
+    // mov    BYTE PTR [r10],0
+    bytes.push(0x41);
+    bytes.push(0xc6);
+    bytes.push(0x02);
+    bytes.push(0x00);
+}
+
+pub fn sub_from(bytes: &mut Vec<u8>, offsets: Vec<i16>) {
+    // Copy the current cell into EAX.
+    // movzx  eax,BYTE PTR [r10]
+    bytes.push(0x41);
+    bytes.push(0x0f);
+    bytes.push(0xb6);
+    bytes.push(0x02);
+
+    for offset in offsets {
+        // Set r13 to the offset (sign-extended from 16 to 64 bits).
+        let offset_i64 = i64::from(offset);
+        let offset_bytes = offset_i64.to_ne_bytes();
+
+        // movabs r13,offset
+        bytes.push(0x49);
+        bytes.push(0xbd);
+        bytes.push(offset_bytes[0]);
+        bytes.push(offset_bytes[1]);
+        bytes.push(offset_bytes[2]);
+        bytes.push(offset_bytes[3]);
+        bytes.push(offset_bytes[4]);
+        bytes.push(offset_bytes[5]);
+        bytes.push(offset_bytes[6]);
+        bytes.push(offset_bytes[7]);
+
+        // Add the current cell value to the cell at the offset.
+        // sub    BYTE PTR [r10+r13],al
+        bytes.push(0x43);
+        bytes.push(0x28);
         bytes.push(0x04);
         bytes.push(0x2a);
     }

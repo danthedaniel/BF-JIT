@@ -7,7 +7,7 @@ use super::instr::Instr;
 use crate::parser::AstNode;
 use crate::runnable::{BF_MEMORY_SIZE, Runnable};
 
-/// BrainFuck virtual machine
+/// brainfuck virtual machine
 pub struct Interpreter {
     program: Vec<Instr>,
     memory: Vec<u8>,
@@ -22,9 +22,9 @@ pub struct Interpreter {
 }
 
 impl Interpreter {
-    pub fn new(nodes: VecDeque<AstNode>) -> Self {
-        Interpreter {
-            program: Self::compile(nodes),
+    pub fn new(ast: VecDeque<AstNode>) -> Self {
+        Self {
+            program: Self::compile(ast),
             memory: vec![0u8; BF_MEMORY_SIZE],
             pc: 0,
             dp: 0,
@@ -45,12 +45,11 @@ impl Interpreter {
                 AstNode::Print => instrs.push(Instr::Print),
                 AstNode::Read => instrs.push(Instr::Read),
                 AstNode::Set(n) => instrs.push(Instr::Set(n)),
-                AstNode::AddTo(n) => instrs.push(Instr::AddTo(n)),
-                AstNode::SubFrom(n) => instrs.push(Instr::SubFrom(n)),
                 AstNode::MultiplyAddTo(offset, factor) => {
-                    instrs.push(Instr::MultiplyAddTo(offset, factor))
+                    instrs.push(Instr::MultiplyAddTo(offset, factor));
                 }
-                AstNode::CopyTo(offsets) => instrs.push(Instr::CopyTo(offsets)),
+                AstNode::AddTo(offsets) => instrs.push(Instr::AddTo(offsets)),
+                AstNode::SubFrom(offsets) => instrs.push(Instr::SubFrom(offsets)),
                 AstNode::Loop(vec) => {
                     let inner_loop = Self::compile(vec);
                     // Add 1 to the offset to account for the BeginLoop/EndLoop instr
@@ -68,7 +67,7 @@ impl Interpreter {
 
     /// Validate and calculate target memory position for operations with offsets
     fn get_target_position(&self, offset: i16) -> Result<usize> {
-        let target_pos = self.dp as isize + offset as isize;
+        let target_pos = isize::try_from(self.dp).unwrap() + offset as isize;
 
         if target_pos < 0 {
             bail!(
@@ -77,6 +76,7 @@ impl Interpreter {
             );
         }
 
+        #[allow(clippy::cast_sign_loss)]
         let target_pos = target_pos as usize;
         if target_pos >= self.memory.len() {
             bail!(
@@ -93,6 +93,7 @@ impl Interpreter {
     ///
     /// Returns Ok(true) to continue execution, Ok(false) when the program has terminated normally,
     /// or Err(_) on execution errors.
+    #[allow(clippy::too_many_lines)]
     pub fn step(&mut self) -> Result<bool> {
         // Terminate if the program counter is outside of the program.
         if self.pc >= self.program.len() {
@@ -156,28 +157,6 @@ impl Interpreter {
             Instr::Set(n) => {
                 self.memory[self.dp] = n;
             }
-            Instr::AddTo(offset) => {
-                if self.memory[self.dp] != 0 {
-                    let target_pos = self
-                        .get_target_position(offset)
-                        .context("Invalid target position for AddTo operation")?;
-
-                    self.memory[target_pos] =
-                        self.memory[target_pos].wrapping_add(self.memory[self.dp]);
-                    self.memory[self.dp] = 0;
-                }
-            }
-            Instr::SubFrom(offset) => {
-                if self.memory[self.dp] != 0 {
-                    let target_pos = self
-                        .get_target_position(offset)
-                        .context("Invalid target position for SubFrom operation")?;
-
-                    self.memory[target_pos] =
-                        self.memory[target_pos].wrapping_sub(self.memory[self.dp]);
-                    self.memory[self.dp] = 0;
-                }
-            }
             Instr::MultiplyAddTo(offset, factor) => {
                 if self.memory[self.dp] != 0 {
                     let target_pos = self
@@ -189,20 +168,36 @@ impl Interpreter {
                     self.memory[self.dp] = 0;
                 }
             }
-            // TODO: Examine poor performance with CopyTo only seen in interpreter
-            Instr::CopyTo(offsets) => {
+            // TODO: Examine poor performance with AddTo only seen in interpreter
+            Instr::AddTo(offsets) => {
                 if self.memory[self.dp] != 0 {
                     let value = self.memory[self.dp];
 
                     for offset in offsets {
                         let target_pos = self.get_target_position(offset).with_context(|| {
                             format!(
-                                "Invalid target position for CopyTo operation at offset {}",
-                                offset
+                                "Invalid target position for CopyTo operation at offset {offset}"
                             )
                         })?;
 
                         self.memory[target_pos] = self.memory[target_pos].wrapping_add(value);
+                    }
+
+                    self.memory[self.dp] = 0;
+                }
+            }
+            Instr::SubFrom(offsets) => {
+                if self.memory[self.dp] != 0 {
+                    let value = self.memory[self.dp];
+
+                    for offset in offsets {
+                        let target_pos = self.get_target_position(offset).with_context(|| {
+                            format!(
+                                "Invalid target position for CopyTo operation at offset {offset}"
+                            )
+                        })?;
+
+                        self.memory[target_pos] = self.memory[target_pos].wrapping_sub(value);
                     }
 
                     self.memory[self.dp] = 0;
@@ -225,10 +220,7 @@ impl Interpreter {
     }
 
     pub fn reset(&mut self) {
-        for i in 0..self.memory.len() {
-            self.memory[i] = 0;
-        }
-
+        self.memory = vec![0u8; BF_MEMORY_SIZE];
         self.pc = 0;
         self.dp = 0;
     }
@@ -238,10 +230,10 @@ impl Runnable for Interpreter {
     fn run(&mut self) -> Result<()> {
         let result = loop {
             match self.step() {
-                Ok(true) => continue,
+                Ok(true) => {}
                 Ok(false) => break Ok(()),
                 Err(error) => break Err(error),
-            };
+            }
         };
 
         self.reset();
@@ -252,13 +244,13 @@ impl Runnable for Interpreter {
 mod tests {
     use super::super::super::test_buffer::TestBuffer;
     use super::*;
-    use crate::parser::Ast;
+    use crate::parser::AstNode;
     use std::io::Cursor;
 
     #[test]
     fn run_hello_world() {
-        let ast = Ast::parse(include_str!("../../../tests/programs/hello_world.bf")).unwrap();
-        let mut fucker = Interpreter::new(ast.data);
+        let ast = AstNode::parse(include_str!("../../../tests/programs/hello_world.bf")).unwrap();
+        let mut fucker = Interpreter::new(ast);
         let shared_buffer = TestBuffer::new();
         fucker.io_write = Box::new(shared_buffer.clone());
 
@@ -272,11 +264,11 @@ mod tests {
     fn run_rot13() {
         // This rot13 program terminates after 16 characters so we can test it. Otherwise it would
         // wait on input forever.
-        let ast = Ast::parse(include_str!("../../../tests/programs/rot13-16char.bf")).unwrap();
-        let mut fucker = Interpreter::new(ast.data);
+        let ast = AstNode::parse(include_str!("../../../tests/programs/rot13-16char.bf")).unwrap();
+        let mut fucker = Interpreter::new(ast);
         let shared_buffer = TestBuffer::new();
         fucker.io_write = Box::new(shared_buffer.clone());
-        let in_cursor = Box::new(Cursor::new("Hello World! 123".as_bytes().to_vec()));
+        let in_cursor = Box::new(Cursor::new(b"Hello World! 123".to_vec()));
         fucker.io_read = in_cursor;
 
         fucker.run().unwrap();
