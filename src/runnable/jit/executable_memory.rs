@@ -1,13 +1,28 @@
 use anyhow::Result;
+#[cfg(not(windows))]
 use libc::{_SC_PAGESIZE, sysconf};
 use std::slice;
 use std::sync::OnceLock;
+#[cfg(windows)]
+use windows_sys::{
+    Win32::System::{
+        Memory::{
+            MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_EXECUTE_READ, PAGE_PROTECTION_FLAGS,
+            PAGE_READWRITE, VirtualAlloc, VirtualFree, VirtualProtect,
+        },
+        SystemInformation::{GetSystemInfo, SYSTEM_INFO},
+    },
+    core::BOOL,
+};
 
 use crate::runnable::jit::JITTarget;
 
 use super::code_gen::RET;
 
-// macos needs an extra flag
+#[cfg(windows)]
+const FALSE: BOOL = 0;
+
+// Platform-specific mmap flags
 #[cfg(target_os = "macos")]
 const MMAP_FLAGS: i32 = libc::MAP_ANON | libc::MAP_PRIVATE | libc::MAP_JIT;
 #[cfg(target_os = "linux")]
@@ -20,6 +35,8 @@ static PAGE_SIZE: OnceLock<usize> = OnceLock::new();
 pub type VoidPtr = *const ();
 /// VTable for JIT compiled code
 type VTable<const SIZE: usize> = [VoidPtr; SIZE];
+
+type JitCallbackFn = fn(*mut u8, &mut JITTarget, &VTable<3>) -> *mut u8;
 
 /// A buffer of executable memory that properly handles platform-specific allocation
 #[derive(Debug)]
@@ -40,17 +57,50 @@ impl ExecutableMemory {
         Ok(Self { ptr, len })
     }
 
-    pub fn as_fn(&self) -> fn(*mut u8, &mut JITTarget, &VTable<3>) -> *mut u8 {
+    pub fn as_fn(&self) -> JitCallbackFn {
         unsafe { std::mem::transmute(self.ptr) }
+    }
+
+    #[cfg(windows)]
+    fn get_page_size() -> usize {
+        let mut system_info = SYSTEM_INFO::default();
+        unsafe { GetSystemInfo(&mut system_info) };
+        system_info.dwPageSize as usize
+    }
+
+    #[cfg(not(windows))]
+    fn get_page_size() -> usize {
+        unsafe { sysconf(_SC_PAGESIZE) as usize }
     }
 
     /// Length is an integer number of pages at least as large as the source.
     fn calculate_length(source_length: usize) -> usize {
-        let page_size = *PAGE_SIZE.get_or_init(|| unsafe { sysconf(_SC_PAGESIZE) as usize });
+        let page_size = *PAGE_SIZE.get_or_init(|| Self::get_page_size());
         let buffer_size_pages = source_length.div_ceil(page_size);
         buffer_size_pages * page_size
     }
 
+    #[cfg(windows)]
+    fn allocate_memory(len: usize) -> Result<*mut u8> {
+        let ptr = unsafe {
+            VirtualAlloc(
+                std::ptr::null_mut(),
+                len,
+                MEM_COMMIT | MEM_RESERVE,
+                PAGE_READWRITE,
+            )
+        };
+        if ptr == std::ptr::null_mut() {
+            anyhow::bail!(
+                "Failed to allocate JIT memory: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+
+        Ok(ptr as *mut u8)
+    }
+
+    #[cfg(not(windows))]
     fn allocate_memory(len: usize) -> Result<*mut u8> {
         let ptr = unsafe {
             libc::mmap(
@@ -100,6 +150,29 @@ impl ExecutableMemory {
         }
     }
 
+    #[cfg(windows)]
+    fn make_executable(buffer: &mut [u8]) -> Result<()> {
+        let mut old_protection: PAGE_PROTECTION_FLAGS = 0;
+        let mprotect_result: BOOL = unsafe {
+            VirtualProtect(
+                buffer.as_mut_ptr() as *mut _,
+                buffer.len(),
+                PAGE_EXECUTE_READ,
+                &mut old_protection,
+            )
+        };
+
+        if mprotect_result == FALSE {
+            anyhow::bail!(
+                "Failed to make memory executable: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+
+        Ok(())
+    }
+
+    #[cfg(not(windows))]
     fn make_executable(buffer: &mut [u8]) -> Result<()> {
         let mprotect_result = unsafe {
             libc::mprotect(
@@ -121,6 +194,16 @@ impl ExecutableMemory {
 }
 
 impl Drop for ExecutableMemory {
+    #[cfg(windows)]
+    fn drop(&mut self) {
+        let free_result: BOOL = unsafe { VirtualFree(self.ptr as *mut _, self.len, MEM_RELEASE) };
+
+        if free_result == FALSE {
+            panic!("Failed to free memory: {}", std::io::Error::last_os_error());
+        }
+    }
+
+    #[cfg(not(windows))]
     fn drop(&mut self) {
         let munmap_result = unsafe { libc::munmap(self.ptr as *mut libc::c_void, self.len) };
 

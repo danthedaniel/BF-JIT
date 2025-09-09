@@ -2,3 +2,4 @@
 **/*.rs.bk
 /programs
 .vscode/
+**/.DS_Store

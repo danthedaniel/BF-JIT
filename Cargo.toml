@@ -1,6 +1,6 @@
 [package]
 name = "fucker"
-version = "0.6.1"
+version = "0.6.2"
 edition = "2024"
 authors = ["teaearlgraycold <teaearlgraycold@protonmail.com>"]
 homepage = "https://github.com/danthedaniel/BF-JIT"
@@ -13,16 +13,18 @@ license = "MIT"
 jit = []
 
 [dependencies]
-libc = "0.2.172"
 docopt = "1.1.1"
 serde = "1.0"
 serde_derive = "1.0"
 anyhow = "1.0"
 
+[target.'cfg(not(windows))'.dependencies]
+libc = "0.2.175"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.0", features = [ "Win32_System", "Win32_System_Memory", "Win32_System_SystemInformation" ] }
+
 [[bin]]
 name = "fucker"
 doc = false
 test = true
-
-[profile.release]
-debug = true
