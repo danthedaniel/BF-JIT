@@ -86,7 +86,7 @@ impl ExecutableMemory {
         let ptr = unsafe {
             VirtualAlloc(
                 std::ptr::null_mut(),
-                len,
+                len / 4,
                 MEM_COMMIT | MEM_RESERVE,
                 PAGE_READWRITE,
             )
@@ -157,7 +157,7 @@ impl ExecutableMemory {
         let mprotect_result: BOOL = unsafe {
             VirtualProtect(
                 buffer.as_mut_ptr().cast::<_>(),
-                buffer.len(),
+                buffer.len() / 4,
                 PAGE_EXECUTE_READ,
                 &raw mut old_protection,
             )
@@ -197,7 +197,8 @@ impl ExecutableMemory {
 impl Drop for ExecutableMemory {
     #[cfg(windows)]
     fn drop(&mut self) {
-        let free_result: BOOL = unsafe { VirtualFree(self.ptr as *mut _, self.len, MEM_RELEASE) };
+        let free_result: BOOL =
+            unsafe { VirtualFree(self.ptr as *mut _, self.len / 4, MEM_RELEASE) };
 
         assert!(
             free_result != FALSE,
