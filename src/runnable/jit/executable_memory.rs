@@ -96,10 +96,8 @@ impl ExecutableMemory {
             "Buffer length must evenly divide by the size of RET"
         );
 
-        for word in 0..(buffer.len() / ret_bytes.len()) {
-            for (offset, &byte) in ret_bytes.iter().enumerate() {
-                buffer[word + offset] = byte;
-            }
+        for chunk in buffer.chunks_exact_mut(ret_bytes.len()) {
+            chunk.copy_from_slice(&ret_bytes);
         }
     }
 
