@@ -137,8 +137,7 @@ impl JITTarget {
     /// targets to be compiled, ran, and later re-ran.
     extern "C" fn jit_callback(&mut self, promise_id: JITPromiseID, mem_ptr: *mut u8) -> *mut u8 {
         let promise_index = usize::from(promise_id.value());
-        let mut context = self.context.borrow_mut();
-        let mut promise = context.promises[promise_index]
+        let mut promise = self.context.borrow_mut().promises[promise_index]
             .take()
             .expect("Someone forgot to put a promise back");
 
@@ -158,7 +157,7 @@ impl JITTarget {
             }
         }
 
-        context.promises[promise_index] = new_promise;
+        self.context.borrow_mut().promises[promise_index] = new_promise;
 
         return_ptr
     }
