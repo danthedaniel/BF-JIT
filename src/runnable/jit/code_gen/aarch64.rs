@@ -266,13 +266,13 @@ pub fn multiply_add(bytes: &mut Vec<u8>, offset: i16, factor: u8) {
     }
 
     // ldrb w10, [x19, w9, sxtw]
-    emit_u32(bytes, 0x38a9_6a6a);
+    emit_u32(bytes, 0x3869_ca6a);
 
     // add w10, w10, w8
     emit_u32(bytes, 0x0b08_014a);
 
     // strb w10, [x19, w9, sxtw]
-    emit_u32(bytes, 0x3829_6a6a);
+    emit_u32(bytes, 0x3829_ca6a);
 
     // Set current cell to 0
     // strb wzr, [x19]
@@ -296,13 +296,13 @@ pub fn add_to(bytes: &mut Vec<u8>, offsets: Vec<i16>) {
         }
 
         // ldrb w10, [x19, w9, sxtw]
-        emit_u32(bytes, 0x38a9_6a6a);
+        emit_u32(bytes, 0x3869_ca6a);
 
         // add w10, w10, w8
         emit_u32(bytes, 0x0b08_014a);
 
         // strb w10, [x19, w9, sxtw]
-        emit_u32(bytes, 0x3829_6a6a);
+        emit_u32(bytes, 0x3829_ca6a);
     }
 
     // Set current cell to 0
@@ -327,13 +327,13 @@ pub fn sub_from(bytes: &mut Vec<u8>, offsets: Vec<i16>) {
         }
 
         // ldrb w10, [x19, w9, sxtw]
-        emit_u32(bytes, 0x38a9_6a6a);
+        emit_u32(bytes, 0x3869_ca6a);
 
         // sub w10, w10, w8
-        emit_u32(bytes, 0x4a01_084b);
+        emit_u32(bytes, 0x4b08_014a);
 
         // strb w10, [x19, w9, sxtw]
-        emit_u32(bytes, 0x3829_6a6a);
+        emit_u32(bytes, 0x3829_ca6a);
     }
 
     // Set current cell to 0
