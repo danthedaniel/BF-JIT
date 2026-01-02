@@ -3,7 +3,6 @@
 import subprocess
 import sys
 import shutil
-from typing import Dict, List
 
 
 TARGETS = [
@@ -20,7 +19,7 @@ def check_command(command: str) -> bool:
     return shutil.which(command) is not None
 
 
-def run_command(command: List[str]) -> bool:
+def run_command(command: list[str]) -> bool:
     """Run a build command and return True if successful."""
     try:
         result = subprocess.run(command, capture_output=False, check=True)
@@ -30,7 +29,7 @@ def run_command(command: List[str]) -> bool:
 
 
 def main():
-    build_results: Dict[str, str] = {}
+    build_results: dict[str, str] = {}
 
     # Check prerequisites
     if not check_command("cargo"):
