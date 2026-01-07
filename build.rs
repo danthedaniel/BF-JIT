@@ -1,4 +1,4 @@
-const JIT_TARGETS: [&str; 6] = [
+const JIT_TARGETS: &[&str] = &[
     "aarch64-unknown-linux-gnu",
     "aarch64-unknown-linux-musl",
     "x86_64-unknown-linux-gnu",

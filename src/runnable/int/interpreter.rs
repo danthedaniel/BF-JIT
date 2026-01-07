@@ -176,7 +176,7 @@ impl Interpreter {
                     for offset in offsets {
                         let target_pos = self.get_target_position(offset).with_context(|| {
                             format!(
-                                "Invalid target position for CopyTo operation at offset {offset}"
+                                "Invalid target position for AddTo operation at offset {offset}"
                             )
                         })?;
 
