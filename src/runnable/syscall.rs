@@ -19,9 +19,9 @@ use anyhow::{Result, bail};
 
 /// Get the platform-specific syscall number offset.
 #[cfg(target_os = "macos")]
-static SYSCALL_NUM_OFFSET: u64 = 0x0200_0000;
+static SYSCALL_NUM_OFFSET: usize = 0x0200_0000;
 #[cfg(target_os = "linux")]
-static SYSCALL_NUM_OFFSET: u64 = 0;
+static SYSCALL_NUM_OFFSET: usize = 0;
 
 /// Argument type constants for syscall arguments
 mod arg_type {
@@ -37,11 +37,12 @@ mod arg_type {
 const MAX_ARGS: usize = 6;
 
 /// Parsed syscall arguments ready for execution
+#[derive(Default)]
 pub struct SyscallArgs {
     /// The syscall number
-    pub syscall_num: u64,
+    pub syscall_num: usize,
     /// The argument values
-    pub args: [u64; MAX_ARGS],
+    pub args: [usize; MAX_ARGS],
 }
 
 /// Parse syscall arguments from memory.
@@ -49,6 +50,7 @@ pub struct SyscallArgs {
 /// # Arguments
 /// * `memory` - Slice of memory starting at the current data pointer
 /// * `mem_base_ptr` - Base pointer to the brainfuck memory (for cell pointer arguments)
+<<<<<<< HEAD
 pub fn parse_syscall_args(
     memory: &[u8],
     mem_base_ptr: *const u8,
@@ -58,10 +60,22 @@ pub fn parse_syscall_args(
 
     let mut args: [u64; MAX_ARGS] = [0; MAX_ARGS];
     let mut pos = 2usize;
+=======
+pub fn parse_syscall_args(memory: &[u8], mem_base_ptr: *const u8) -> Result<SyscallArgs> {
+    let mut syscall_args = SyscallArgs::default();
+    let mut pos = 0usize;
 
-    for arg in args.iter_mut().take(arg_count.min(MAX_ARGS)) {
+    syscall_args.syscall_num = usize::from(memory[pos]) | SYSCALL_NUM_OFFSET;
+    pos += 1;
+>>>>>>> 997c534 (Use usize instead of u32/u64 in syscall.rs)
+
+    let arg_count = memory[pos] as usize;
+    pos += 1;
+
+    for arg in syscall_args.args.iter_mut().take(arg_count.min(MAX_ARGS)) {
         let arg_type = memory[pos];
         pos += 1;
+
         let arg_len = memory[pos] as usize;
         pos += 1;
 
@@ -69,22 +83,22 @@ pub fn parse_syscall_args(
         let data_pos = pos;
 
         // Read argument value (big-endian)
-        let mut value: u64 = 0;
+        let mut value: usize = 0;
         for i in 0..arg_len {
-            value = (value << 8) | u64::from(memory[pos + i]);
+            value = (value << 8) | usize::from(memory[pos + i]);
         }
         pos += arg_len;
 
         *arg = match arg_type {
             arg_type::NORMAL => value,
-            arg_type::BUFFER_PTR => memory[data_pos..].as_ptr() as u64,
+            arg_type::BUFFER_PTR => memory[data_pos..].as_ptr() as usize,
             #[allow(clippy::cast_possible_truncation)]
-            arg_type::CELL_PTR => mem_base_ptr.wrapping_add(value as usize) as u64,
+            arg_type::CELL_PTR => mem_base_ptr.wrapping_add(value as usize) as usize,
             _ => bail!("Invalid syscall argument type"),
         };
     }
 
-    Ok(SyscallArgs { syscall_num, args })
+    Ok(syscall_args)
 }
 
 /// Execute a syscall with the given arguments.
@@ -92,87 +106,84 @@ pub fn parse_syscall_args(
     all(target_os = "linux", target_arch = "x86_64"),
     all(target_os = "macos", target_arch = "x86_64")
 ))]
-pub fn execute_syscall(args: &SyscallArgs) -> u64 {
+pub fn execute_syscall(syscall_args: &SyscallArgs) -> usize {
     use std::arch::asm;
 
-    let result: u64;
+    let result: usize;
     unsafe {
         asm!(
             "syscall",
-            inlateout("rax") args.syscall_num => result,
-            in("rdi") args.args[0],
-            in("rsi") args.args[1],
-            in("rdx") args.args[2],
-            in("r10") args.args[3],
-            in("r8") args.args[4],
-            in("r9") args.args[5],
+            inlateout("rax") syscall_args.syscall_num => result,
+            in("rdi") syscall_args.args[0],
+            in("rsi") syscall_args.args[1],
+            in("rdx") syscall_args.args[2],
+            in("r10") syscall_args.args[3],
+            in("r8") syscall_args.args[4],
+            in("r9") syscall_args.args[5],
             lateout("rcx") _,
             lateout("r11") _,
             options(nostack)
         );
     }
+
     result
 }
 
 /// Execute a syscall with the given arguments.
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-pub fn execute_syscall(args: &SyscallArgs) -> u64 {
+pub fn execute_syscall(syscall_args: &SyscallArgs) -> usize {
     use std::arch::asm;
 
-    let result: u64;
+    let result: usize;
     unsafe {
         asm!(
             "svc #0x80",
-            inlateout("x16") args.syscall_num => _,
-            inlateout("x0") args.args[0] => result,
-            in("x1") args.args[1],
-            in("x2") args.args[2],
-            in("x3") args.args[3],
-            in("x4") args.args[4],
-            in("x5") args.args[5],
+            inlateout("x16") syscall_args.syscall_num => _,
+            inlateout("x0") syscall_args.args[0] => result,
+            in("x1") syscall_args.args[1],
+            in("x2") syscall_args.args[2],
+            in("x3") syscall_args.args[3],
+            in("x4") syscall_args.args[4],
+            in("x5") syscall_args.args[5],
             options(nostack)
         );
     }
+
     result
 }
 
 /// Execute a syscall with the given arguments.
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-pub fn execute_syscall(args: &SyscallArgs) -> u64 {
+pub fn execute_syscall(syscall_args: &SyscallArgs) -> usize {
     use std::arch::asm;
 
-    let result: u64;
+    let result: usize;
     unsafe {
         asm!(
             "svc #0",
-            inlateout("x8") args.syscall_num => _,
-            inlateout("x0") args.args[0] => result,
-            in("x1") args.args[1],
-            in("x2") args.args[2],
-            in("x3") args.args[3],
-            in("x4") args.args[4],
-            in("x5") args.args[5],
+            in("x8") syscall_args.syscall_num,
+            inlateout("x0") syscall_args.args[0] => result,
+            in("x1") syscall_args.args[1],
+            in("x2") syscall_args.args[2],
+            in("x3") syscall_args.args[3],
+            in("x4") syscall_args.args[4],
+            in("x5") syscall_args.args[5],
+            lateout("x6") _,
+            lateout("x7") _,
+            lateout("x8") _,
             options(nostack)
         );
     }
+
     result
 }
 
 /// Execute a syscall with the given arguments.
 #[cfg(all(target_os = "linux", target_arch = "x86"))]
-pub fn execute_syscall(args: &SyscallArgs) -> u64 {
+pub fn execute_syscall(syscall_args: &SyscallArgs) -> usize {
     use std::arch::asm;
 
-    let result: u32;
-    // Prepare args as u32 array for easier assembly access
-    let args32: [u32; MAX_ARGS] = [
-        args.args[0] as u32,
-        args.args[1] as u32,
-        args.args[2] as u32,
-        args.args[3] as u32,
-        args.args[4] as u32,
-        args.args[5] as u32,
-    ];
+    let result: usize;
     unsafe {
         asm!(
             "push ebp",
@@ -185,12 +196,13 @@ pub fn execute_syscall(args: &SyscallArgs) -> u64 {
             "pop edi",
             "pop esi",
             "pop ebp",
-            arr = in(reg) args32.as_ptr(),
-            inlateout("eax") args.syscall_num as u32 => result,
-            in("ebx") args32[0],
-            in("ecx") args32[1],
-            in("edx") args32[2],
+            arr = in(reg) syscall_args.args.as_ptr(),
+            inlateout("eax") syscall_args.syscall_num => result,
+            in("ebx") syscall_args.args[0],
+            in("ecx") syscall_args.args[1],
+            in("edx") syscall_args.args[2],
         );
     }
-    u64::from(result)
+
+    result
 }

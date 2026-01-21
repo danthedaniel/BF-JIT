@@ -208,11 +208,11 @@ impl JITTarget {
             slice::from_raw_parts(mem_ptr, BF_MEMORY_SIZE - cell)
         };
 
-        let args = parse_syscall_args(memory, bf_mem_base).expect("Invalid syscall argument type");
+        let syscall_args = parse_syscall_args(memory, bf_mem_base).expect("Invalid syscall argument type");
 
         #[allow(clippy::cast_possible_truncation)]
         {
-            execute_syscall(&args) as u8
+            execute_syscall(&syscall_args) as u8
         }
     }
 

@@ -277,10 +277,6 @@ fn test_bracket_mismatch_error() {
     assert!(stderr.contains("Unmatched '[' bracket"));
 }
 
-// =============================================================================
-// Syscall tests - platform-specific
-// =============================================================================
-
 #[cfg(target_os = "macos")]
 const SYSCALL_WRITE_PROGRAM: &str = "tests/programs/syscall_write_macos.bf";
 #[cfg(target_os = "linux")]

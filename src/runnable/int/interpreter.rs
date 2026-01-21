@@ -238,11 +238,11 @@ impl Interpreter {
         let memory = &self.memory[self.dp..];
         let mem_base_ptr = self.memory.as_ptr();
 
-        let args =
+        let syscall_args =
             parse_syscall_args(memory, mem_base_ptr).map_err(|e| anyhow::anyhow!("{}", e))?;
 
         #[allow(clippy::cast_possible_truncation)]
-        Ok(execute_syscall(&args) as u8)
+        Ok(execute_syscall(&syscall_args) as u8)
     }
 }
 
