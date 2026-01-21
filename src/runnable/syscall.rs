@@ -157,3 +157,40 @@ pub fn execute_syscall(args: &SyscallArgs) -> u64 {
     }
     result
 }
+
+/// Execute a syscall with the given arguments.
+#[cfg(all(target_os = "linux", target_arch = "x86"))]
+pub fn execute_syscall(args: &SyscallArgs) -> u64 {
+    use std::arch::asm;
+
+    let result: u32;
+    // Prepare args as u32 array for easier assembly access
+    let args32: [u32; MAX_ARGS] = [
+        args.args[0] as u32,
+        args.args[1] as u32,
+        args.args[2] as u32,
+        args.args[3] as u32,
+        args.args[4] as u32,
+        args.args[5] as u32,
+    ];
+    unsafe {
+        asm!(
+            "push ebp",
+            "push esi",
+            "push edi",
+            "mov edi, [{arr} + 16]",
+            "mov esi, [{arr} + 12]",
+            "mov ebp, [{arr} + 20]",
+            "int 0x80",
+            "pop edi",
+            "pop esi",
+            "pop ebp",
+            arr = in(reg) args32.as_ptr(),
+            inlateout("eax") args.syscall_num as u32 => result,
+            in("ebx") args32[0],
+            in("ecx") args32[1],
+            in("edx") args32[2],
+        );
+    }
+    u64::from(result)
+}
