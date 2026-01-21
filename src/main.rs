@@ -19,7 +19,7 @@ const USAGE: &str = "
 Fucker
 
 Usage:
-  fucker [--int] <program>
+  fucker [--int] [--syscalls] <program>
   fucker (--ast) <program>
   fucker (-h | --help)
 
@@ -27,6 +27,7 @@ Options:
   -h --help     Show this screen.
   --ast         Display intermediate language.
   --int         Use an interpreter instead of the JIT compiler.
+  --syscalls    Enable syscall support (% instruction).
 ";
 
 #[derive(Debug, Deserialize)]
@@ -34,6 +35,7 @@ struct Args {
     arg_program: String,
     flag_ast: bool,
     flag_int: bool,
+    flag_syscalls: bool,
 }
 
 fn main() -> Result<()> {
@@ -42,7 +44,7 @@ fn main() -> Result<()> {
         .unwrap_or_else(|e| e.exit());
 
     let program = read_program(&args.arg_program)
-        .and_then(|source| AstNode::parse(&source))
+        .and_then(|source| AstNode::parse(&source, args.flag_syscalls))
         .with_context(|| format!("Failed to load program: {}", args.arg_program))?;
 
     if args.flag_ast {

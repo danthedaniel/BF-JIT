@@ -25,4 +25,6 @@ pub enum Instr {
     BeginLoop(usize),
     /// If the current memory cell is not 0, jump backward by the contained offset.
     EndLoop(usize),
+    /// Execute a syscall (systemf extension).
+    Syscall,
 }

@@ -1,6 +1,7 @@
 pub mod int;
 #[cfg(feature = "jit")]
 pub mod jit;
+pub mod syscall;
 
 use anyhow::Result;
 

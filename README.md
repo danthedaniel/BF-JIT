@@ -58,14 +58,15 @@ Add these keys to `.vscode/settings.json`:
 Fucker
 
 Usage:
-  fucker [--int] <program>
-  fucker (--ast) <program>
+  fucker [--int] [--syscalls] <program>
+  fucker (--ast) [--syscalls] <program>
   fucker (-h | --help)
 
 Options:
   -h --help     Show this screen.
   --ast         Display intermediate language.
   --int         Use an interpreter instead of the JIT compiler.
+  --syscalls    Enable syscall support (% instruction).
 ```
 
 ## What is BrainFuck?
@@ -83,6 +84,17 @@ pointer. There are only 8 single character commands:
 * `,` : Read one ASCII character from stdin
 * `[` : Jump to the matching `]` if the current memory cell is `0`
 * `]` : Jump to the matching `[` if the current memory cell is not `0`
+
+### Syscall Extension
+
+When the `--syscalls` flag is enabled, an additional instruction is available:
+
+* `%` : Execute a syscall using arguments from the tape
+
+This extension is based on [systemf](https://github.com/ajyoon/systemf). The
+syscall number and arguments are read from consecutive memory cells starting at
+the current data pointer. This allows BrainFuck programs to perform system calls
+for operations like reading/writing to file descriptors.
 
 ## Implementation
 

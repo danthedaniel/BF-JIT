@@ -27,11 +27,16 @@ pub enum AstNode {
     /// Loop over the contained instructions while the current memory cell is
     /// not zero.
     Loop(VecDeque<AstNode>),
+    /// Execute a syscall (systemf extension).
+    /// The syscall arguments are read from the tape starting at the current cell.
+    Syscall,
 }
 
 impl AstNode {
     /// Convert raw input into an AST.
-    pub fn parse(input: &str) -> Result<VecDeque<AstNode>> {
+    ///
+    /// If `enable_syscalls` is true, the `%` character will be parsed as a syscall instruction.
+    pub fn parse(input: &str, enable_syscalls: bool) -> Result<VecDeque<AstNode>> {
         let mut output = VecDeque::new();
         let mut loops = VecDeque::new();
 
@@ -48,6 +53,7 @@ impl AstNode {
                 '<' => AstNode::Prev(1),
                 '.' => AstNode::Print,
                 ',' => AstNode::Read,
+                '%' if enable_syscalls => AstNode::Syscall,
                 '[' => {
                     loops.push_back(VecDeque::new());
                     continue;
@@ -339,26 +345,26 @@ mod tests {
 
     #[test]
     fn too_many_loop_begins() {
-        let ast = AstNode::parse("[[]");
+        let ast = AstNode::parse("[[]", false);
         assert!(ast.is_err());
     }
 
     #[test]
     fn too_many_loop_ends() {
-        let ast = AstNode::parse("[]]");
+        let ast = AstNode::parse("[]]", false);
         assert!(ast.is_err());
     }
 
     #[test]
     fn run_length_encode() {
-        let ast = AstNode::parse("+++++").unwrap();
+        let ast = AstNode::parse("+++++", false).unwrap();
         assert_eq!(ast.len(), 1);
         assert_eq!(ast[0], AstNode::Incr(5));
     }
 
     #[test]
     fn simplify_to_set() {
-        let ast = AstNode::parse("+[-]+++").unwrap();
+        let ast = AstNode::parse("+[-]+++", false).unwrap();
         assert_eq!(ast.len(), 2);
         assert_eq!(ast[0], AstNode::Incr(1));
         assert_eq!(ast[1], AstNode::Set(3));
@@ -366,7 +372,7 @@ mod tests {
 
     #[test]
     fn simplify_to_add() {
-        let ast = AstNode::parse("+[->+<]").unwrap();
+        let ast = AstNode::parse("+[->+<]", false).unwrap();
         assert_eq!(ast.len(), 2);
         assert_eq!(ast[0], AstNode::Incr(1));
         assert_eq!(ast[1], AstNode::AddTo(vec![1]));
@@ -374,7 +380,7 @@ mod tests {
 
     #[test]
     fn simplify_to_sub() {
-        let ast = AstNode::parse("+[->-<]").unwrap();
+        let ast = AstNode::parse("+[->-<]", false).unwrap();
         assert_eq!(ast.len(), 2);
         assert_eq!(ast[0], AstNode::Incr(1));
         assert_eq!(ast[1], AstNode::SubFrom(vec![1]));
@@ -382,13 +388,13 @@ mod tests {
 
     #[test]
     fn removes_leading_loops() {
-        let ast = AstNode::parse("[-]").unwrap();
+        let ast = AstNode::parse("[-]", false).unwrap();
         assert_eq!(ast.len(), 0);
     }
 
     #[test]
     fn simplify_to_multiply() {
-        let ast = AstNode::parse("+[->>+++<<]").unwrap();
+        let ast = AstNode::parse("+[->>+++<<]", false).unwrap();
         assert_eq!(ast.len(), 2);
         assert_eq!(ast[0], AstNode::Incr(1));
         assert_eq!(ast[1], AstNode::MultiplyAddTo(2, 3));
@@ -396,7 +402,7 @@ mod tests {
 
     #[test]
     fn simplify_to_copy() {
-        let ast = AstNode::parse("+[->>+>+<<<]").unwrap();
+        let ast = AstNode::parse("+[->>+>+<<<]", false).unwrap();
         assert_eq!(ast.len(), 2);
         assert_eq!(ast[0], AstNode::Incr(1));
         assert_eq!(ast[1], AstNode::AddTo(vec![2, 3]));
@@ -405,31 +411,48 @@ mod tests {
     #[test]
     fn dead_code_elimination() {
         // Complete cancellation
-        let ast = AstNode::parse("+-").unwrap();
+        let ast = AstNode::parse("+-", false).unwrap();
         assert_eq!(ast.len(), 0);
 
-        let ast = AstNode::parse("><").unwrap();
+        let ast = AstNode::parse("><", false).unwrap();
         assert_eq!(ast.len(), 0);
 
         // Partial cancellation
-        let ast = AstNode::parse("+++--").unwrap();
+        let ast = AstNode::parse("+++--", false).unwrap();
         assert_eq!(ast.len(), 1);
         assert_eq!(ast[0], AstNode::Incr(1));
 
-        let ast = AstNode::parse("++---").unwrap();
+        let ast = AstNode::parse("++---", false).unwrap();
         assert_eq!(ast.len(), 1);
         assert_eq!(ast[0], AstNode::Decr(1));
     }
 
     #[test]
     fn parses_rot13() {
-        let ast = AstNode::parse(include_str!("../../tests/programs/rot13-16char.bf"));
+        let ast = AstNode::parse(include_str!("../../tests/programs/rot13-16char.bf"), false);
         assert!(ast.is_ok());
     }
 
     #[test]
     fn parses_mandelbrot() {
-        let ast = AstNode::parse(include_str!("../../tests/programs/mandelbrot.bf"));
+        let ast = AstNode::parse(include_str!("../../tests/programs/mandelbrot.bf"), false);
         assert!(ast.is_ok());
+    }
+
+    #[test]
+    fn syscall_ignored_when_disabled() {
+        // % should be treated as a comment when syscalls are disabled
+        let ast = AstNode::parse("+%+", false).unwrap();
+        assert_eq!(ast.len(), 1);
+        assert_eq!(ast[0], AstNode::Incr(2));
+    }
+
+    #[test]
+    fn syscall_parsed_when_enabled() {
+        let ast = AstNode::parse("+%+", true).unwrap();
+        assert_eq!(ast.len(), 3);
+        assert_eq!(ast[0], AstNode::Incr(1));
+        assert_eq!(ast[1], AstNode::Syscall);
+        assert_eq!(ast[2], AstNode::Incr(1));
     }
 }

@@ -5,6 +5,7 @@ use std::io::{self, Read, Write};
 
 use super::instr::Instr;
 use crate::parser::AstNode;
+use crate::runnable::syscall::{execute_syscall, parse_syscall_args};
 use crate::runnable::{BF_MEMORY_SIZE, Runnable};
 
 /// brainfuck virtual machine
@@ -59,6 +60,7 @@ impl Interpreter {
                     instrs.extend(inner_loop);
                     instrs.push(Instr::EndLoop(offset));
                 }
+                AstNode::Syscall => instrs.push(Instr::Syscall),
             }
         }
 
@@ -213,6 +215,10 @@ impl Interpreter {
                     self.pc -= offset;
                 }
             }
+            Instr::Syscall => {
+                let result = self.do_syscall()?;
+                self.memory[self.dp] = result;
+            }
         }
 
         self.pc += 1;
@@ -223,6 +229,20 @@ impl Interpreter {
         self.memory = vec![0u8; BF_MEMORY_SIZE];
         self.pc = 0;
         self.dp = 0;
+    }
+
+    /// Execute a syscall using the systemf convention.
+    ///
+    /// Returns the low byte of the syscall return value.
+    fn do_syscall(&self) -> Result<u8> {
+        let memory = &self.memory[self.dp..];
+        let mem_base_ptr = self.memory.as_ptr();
+
+        let args =
+            parse_syscall_args(memory, mem_base_ptr).map_err(|e| anyhow::anyhow!("{}", e))?;
+
+        #[allow(clippy::cast_possible_truncation)]
+        Ok(execute_syscall(&args) as u8)
     }
 }
 
@@ -249,7 +269,7 @@ mod tests {
 
     #[test]
     fn run_hello_world() {
-        let ast = AstNode::parse(include_str!("../../../tests/programs/hello_world.bf")).unwrap();
+        let ast = AstNode::parse(include_str!("../../../tests/programs/hello_world.bf"), false).unwrap();
         let mut fucker = Interpreter::new(ast);
         let shared_buffer = TestBuffer::new();
         fucker.io_write = Box::new(shared_buffer.clone());
@@ -264,7 +284,7 @@ mod tests {
     fn run_rot13() {
         // This rot13 program terminates after 16 characters so we can test it. Otherwise it would
         // wait on input forever.
-        let ast = AstNode::parse(include_str!("../../../tests/programs/rot13-16char.bf")).unwrap();
+        let ast = AstNode::parse(include_str!("../../../tests/programs/rot13-16char.bf"), false).unwrap();
         let mut fucker = Interpreter::new(ast);
         let shared_buffer = TestBuffer::new();
         fucker.io_write = Box::new(shared_buffer.clone());

@@ -26,9 +26,10 @@ pub enum VTableEntry {
     JITCallback = 0,
     Read = 1,
     Print = 2,
+    Syscall = 3,
 }
 
-type JitCallbackFn = extern "C" fn(*mut u8, &mut JITTarget, &VTable<3>) -> *mut u8;
+type JitCallbackFn = extern "C" fn(*mut u8, &mut JITTarget, &VTable<4>) -> *mut u8;
 
 /// A buffer of executable memory that properly handles platform-specific allocation
 #[derive(Debug)]

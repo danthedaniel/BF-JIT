@@ -10,6 +10,7 @@ use super::executable_memory::{ExecutableMemory, VoidPtr};
 use super::jit_promise::{JITPromise, JITPromiseID, PromiseSet};
 use crate::parser::AstNode;
 use crate::runnable::jit::executable_memory::VTable;
+use crate::runnable::syscall::{execute_syscall, parse_syscall_args};
 use crate::runnable::{BF_MEMORY_SIZE, Runnable};
 
 /// Set arbitrarily
@@ -109,6 +110,7 @@ impl JITTarget {
                     bytes.extend(Self::compile_loop(nodes, context));
                 }
                 AstNode::Loop(nodes) => bytes.extend(Self::defer_loop(nodes, context)),
+                AstNode::Syscall => code_gen::syscall(&mut bytes),
             }
         }
 
@@ -189,12 +191,34 @@ impl JITTarget {
         buffer[0]
     }
 
+    /// Execute a syscall using the systemf convention.
+    /// Called by JIT compiled code.
+    ///
+    /// Arguments:
+    /// - `mem_ptr`: Pointer to the current cell in the brainfuck memory
+    /// - `bf_mem_base`: Base pointer to the brainfuck memory
+    ///
+    /// Returns the low byte of the syscall return value.
+    #[allow(clippy::unused_self)]
+    extern "C" fn syscall(&mut self, mem_ptr: *mut u8, bf_mem_base: *mut u8) -> u8 {
+        // Create a slice from the memory pointer - use a reasonable size for syscall args
+        let memory = unsafe { std::slice::from_raw_parts(mem_ptr, 1024) };
+
+        let args = parse_syscall_args(memory, bf_mem_base).expect("Invalid syscall argument type");
+
+        #[allow(clippy::cast_possible_truncation)]
+        {
+            execute_syscall(&args) as u8
+        }
+    }
+
     /// Execute the bytes buffer as a function.
     fn exec(&mut self, mem_ptr: *mut u8) -> *mut u8 {
-        let vtable: VTable<3> = [
+        let vtable: VTable<4> = [
             Self::jit_callback as VoidPtr,
             Self::read as VoidPtr,
             Self::print as VoidPtr,
+            Self::syscall as VoidPtr,
         ];
 
         self.executable.as_fn()(mem_ptr, self, &vtable)
@@ -220,7 +244,7 @@ mod tests {
 
     #[test]
     fn run_hello_world() {
-        let ast = AstNode::parse(include_str!("../../../tests/programs/hello_world.bf")).unwrap();
+        let ast = AstNode::parse(include_str!("../../../tests/programs/hello_world.bf"), false).unwrap();
         let mut jit_target = JITTarget::new(ast).unwrap();
         let shared_buffer = TestBuffer::new();
         jit_target.context.borrow_mut().io_write = Box::new(shared_buffer.clone());
@@ -233,7 +257,7 @@ mod tests {
 
     #[test]
     fn run_mandelbrot() {
-        let ast = AstNode::parse(include_str!("../../../tests/programs/mandelbrot.bf")).unwrap();
+        let ast = AstNode::parse(include_str!("../../../tests/programs/mandelbrot.bf"), false).unwrap();
         let mut jit_target = JITTarget::new(ast).unwrap();
         let shared_buffer = TestBuffer::new();
         jit_target.context.borrow_mut().io_write = Box::new(shared_buffer.clone());
@@ -249,7 +273,7 @@ mod tests {
     fn run_rot13() {
         // This rot13 program terminates after 16 characters so we can test it. Otherwise it would
         // wait on input forever.
-        let ast = AstNode::parse(include_str!("../../../tests/programs/rot13-16char.bf")).unwrap();
+        let ast = AstNode::parse(include_str!("../../../tests/programs/rot13-16char.bf"), false).unwrap();
         let mut jit_target = JITTarget::new(ast).unwrap();
         let shared_buffer = TestBuffer::new();
         jit_target.context.borrow_mut().io_write = Box::new(shared_buffer.clone());

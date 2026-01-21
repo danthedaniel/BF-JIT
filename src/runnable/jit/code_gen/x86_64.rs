@@ -5,12 +5,12 @@ pub const RET: u8 = 0xc3;
 const PTR_SIZE: u8 = 8;
 
 // Register usage:
-// r10 - BrainFuck memory pointer
+// r10 - BrainFuck memory pointer (current cell)
 // r11 - JITTarget pointer
 // r12 - VTable pointer
 // r13 - First temporary register
 // r14 - Second temporary register
-// r15 - Third temporary register
+// r15 - BrainFuck memory base pointer (for syscalls)
 
 fn callee_save_to_stack(bytes: &mut Vec<u8>) {
     // push   rbx
@@ -53,6 +53,12 @@ pub fn wrapper(bytes: &mut Vec<u8>, content: Vec<u8>) {
     bytes.push(0x49);
     bytes.push(0x89);
     bytes.push(0xfa);
+
+    // Also store base memory pointer in r15 for syscalls
+    // mov    r15,rdi
+    bytes.push(0x49);
+    bytes.push(0x89);
+    bytes.push(0xff);
 
     // Store pointer to JITTarget (second argument) in r11
     // mov    r11,rsi
@@ -476,4 +482,36 @@ pub fn sub_from(bytes: &mut Vec<u8>, offsets: Vec<i16>) {
     bytes.push(0xc6);
     bytes.push(0x02);
     bytes.push(0x00);
+}
+
+pub fn syscall(bytes: &mut Vec<u8>) {
+    fn_call_pre(bytes);
+
+    // Move the JITTarget pointer into the first argument register
+    // mov    rdi,r11
+    bytes.push(0x4c);
+    bytes.push(0x89);
+    bytes.push(0xdf);
+
+    // Move the current memory pointer into the second argument register
+    // mov    rsi,r10
+    bytes.push(0x4c);
+    bytes.push(0x89);
+    bytes.push(0xd6);
+
+    // Move the base memory pointer into the third argument register
+    // mov    rdx,r15
+    bytes.push(0x4c);
+    bytes.push(0x89);
+    bytes.push(0xfa);
+
+    call_vtable_entry(bytes, VTableEntry::Syscall);
+
+    fn_call_post(bytes);
+
+    // Copy return value into current cell.
+    // mov    BYTE PTR [r10],al
+    bytes.push(0x41);
+    bytes.push(0x88);
+    bytes.push(0x02);
 }

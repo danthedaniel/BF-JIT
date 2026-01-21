@@ -5,9 +5,10 @@ pub const RET: u32 = 0xd65f_03c0;
 const PTR_SIZE: u32 = 8;
 
 // Register usage:
-// x19 - BrainFuck memory pointer (callee-saved)
+// x19 - BrainFuck memory pointer (current cell, callee-saved)
 // x20 - JITTarget pointer (callee-saved)
 // x21 - VTable pointer (callee-saved)
+// x22 - BrainFuck memory base pointer (for syscalls, callee-saved)
 // x0-x7 - Function arguments and return values
 // x8-x18 - Temporary registers
 // x29 - Frame pointer
@@ -38,6 +39,10 @@ pub fn wrapper(bytes: &mut Vec<u8>, content: Vec<u8>) {
     // Store pointer to brainfuck memory (first argument x0) in x19
     // mov x19, x0
     emit_u32(bytes, 0xaa00_03f3);
+
+    // Also store base memory pointer in x22 for syscalls
+    // mov x22, x0
+    emit_u32(bytes, 0xaa00_03f6);
 
     // Store pointer to JITTarget (second argument x1) in x20
     // mov x20, x1
@@ -339,4 +344,28 @@ pub fn sub_from(bytes: &mut Vec<u8>, offsets: Vec<i16>) {
     // Set current cell to 0
     // strb wzr, [x19]
     emit_u32(bytes, 0x3900_027f);
+}
+
+pub fn syscall(bytes: &mut Vec<u8>) {
+    fn_call_pre(bytes);
+
+    // Move the JITTarget pointer into the first argument register
+    // mov x0, x20
+    emit_u32(bytes, 0xaa14_03e0);
+
+    // Move the current memory pointer into the second argument register
+    // mov x1, x19
+    emit_u32(bytes, 0xaa13_03e1);
+
+    // Move the base memory pointer into the third argument register
+    // mov x2, x22
+    emit_u32(bytes, 0xaa16_03e2);
+
+    call_vtable_entry(bytes, VTableEntry::Syscall);
+
+    fn_call_post(bytes);
+
+    // Copy return value into current cell
+    // strb w0, [x19]
+    emit_u32(bytes, 0x3900_0260);
 }

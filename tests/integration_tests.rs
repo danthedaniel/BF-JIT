@@ -276,3 +276,76 @@ fn test_bracket_mismatch_error() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("Unmatched '[' bracket"));
 }
+
+// =============================================================================
+// Syscall tests - platform-specific
+// =============================================================================
+
+#[cfg(target_os = "macos")]
+const SYSCALL_WRITE_PROGRAM: &str = "tests/programs/syscall_write_macos.bf";
+#[cfg(target_os = "linux")]
+const SYSCALL_WRITE_PROGRAM: &str = "tests/programs/syscall_write_linux.bf";
+
+#[cfg(target_os = "macos")]
+const SYSCALL_READ_PROGRAM: &str = "tests/programs/syscall_read_macos.bf";
+#[cfg(target_os = "linux")]
+const SYSCALL_READ_PROGRAM: &str = "tests/programs/syscall_read_linux.bf";
+
+#[test]
+#[cfg(feature = "jit")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn test_syscall_write_jit() {
+    // Test that syscall write outputs "HI\n" to stdout
+    let output = run_fucker(&["--syscalls", SYSCALL_WRITE_PROGRAM]);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout, "HI\n");
+}
+
+#[test]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn test_syscall_write_interpreter() {
+    // Test that syscall write outputs "HI\n" to stdout using interpreter
+    let output = run_fucker(&["--int", "--syscalls", SYSCALL_WRITE_PROGRAM]);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout, "HI\n");
+}
+
+#[test]
+#[cfg(feature = "jit")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn test_syscall_read_jit() {
+    // Test that syscall read reads from stdin and echoes it back
+    // The program reads 5 bytes into cells 28-32, then prints them
+    let input = "HELLO";
+    let output = run_fucker_with_input(&["--syscalls", SYSCALL_READ_PROGRAM], input);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout, "HELLO");
+}
+
+#[test]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn test_syscall_read_interpreter() {
+    // Test that syscall read reads from stdin and echoes it back using interpreter
+    // The program reads 5 bytes into cells 28-32, then prints them
+    let input = "HELLO";
+    let output = run_fucker_with_input(&["--int", "--syscalls", SYSCALL_READ_PROGRAM], input);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout, "HELLO");
+}
+
+#[test]
+#[cfg(feature = "jit")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn test_syscall_jit_vs_interpreter_consistency() {
+    // Test that JIT and interpreter produce the same output for syscall write
+    let jit_output = run_fucker(&["--syscalls", SYSCALL_WRITE_PROGRAM]);
+    let int_output = run_fucker(&["--int", "--syscalls", SYSCALL_WRITE_PROGRAM]);
+
+    assert!(jit_output.status.success());
+    assert!(int_output.status.success());
+    assert_eq!(jit_output.stdout, int_output.stdout);
+}
