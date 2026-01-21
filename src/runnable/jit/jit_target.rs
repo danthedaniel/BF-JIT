@@ -1,9 +1,9 @@
 use anyhow::{Context, Result};
 use std::cell::RefCell;
 use std::collections::VecDeque;
-use std::fmt;
 use std::io::{self, Read, Write};
 use std::rc::Rc;
+use std::{fmt, slice};
 
 use super::code_gen;
 use super::executable_memory::{ExecutableMemory, VoidPtr};
@@ -201,8 +201,12 @@ impl JITTarget {
     /// Returns the low byte of the syscall return value.
     #[allow(clippy::unused_self)]
     extern "C" fn syscall(&mut self, mem_ptr: *mut u8, bf_mem_base: *mut u8) -> u8 {
-        // Create a slice from the memory pointer - use a reasonable size for syscall args
-        let memory = unsafe { std::slice::from_raw_parts(mem_ptr, 1024) };
+        // Get memory from current cell to end of the full memory segment
+        let memory = unsafe {
+            let cell = usize::try_from(mem_ptr.offset_from(bf_mem_base))
+                .expect("mem_ptr is below the base memory location");
+            slice::from_raw_parts(mem_ptr, BF_MEMORY_SIZE - cell)
+        };
 
         let args = parse_syscall_args(memory, bf_mem_base).expect("Invalid syscall argument type");
 
