@@ -50,24 +50,12 @@ pub struct SyscallArgs {
 /// # Arguments
 /// * `memory` - Slice of memory starting at the current data pointer
 /// * `mem_base_ptr` - Base pointer to the brainfuck memory (for cell pointer arguments)
-<<<<<<< HEAD
-pub fn parse_syscall_args(
-    memory: &[u8],
-    mem_base_ptr: *const u8,
-) -> Result<SyscallArgs> {
-    let syscall_num = u64::from(memory[0]) | SYSCALL_NUM_OFFSET;
-    let arg_count = memory[1] as usize;
-
-    let mut args: [u64; MAX_ARGS] = [0; MAX_ARGS];
-    let mut pos = 2usize;
-=======
 pub fn parse_syscall_args(memory: &[u8], mem_base_ptr: *const u8) -> Result<SyscallArgs> {
     let mut syscall_args = SyscallArgs::default();
     let mut pos = 0usize;
 
     syscall_args.syscall_num = usize::from(memory[pos]) | SYSCALL_NUM_OFFSET;
     pos += 1;
->>>>>>> 997c534 (Use usize instead of u32/u64 in syscall.rs)
 
     let arg_count = memory[pos] as usize;
     pos += 1;
@@ -152,7 +140,6 @@ pub fn execute_syscall(syscall_args: &SyscallArgs) -> usize {
     result
 }
 
-/// Execute a syscall with the given arguments.
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 pub fn execute_syscall(syscall_args: &SyscallArgs) -> usize {
     use std::arch::asm;
@@ -168,9 +155,6 @@ pub fn execute_syscall(syscall_args: &SyscallArgs) -> usize {
             in("x3") syscall_args.args[3],
             in("x4") syscall_args.args[4],
             in("x5") syscall_args.args[5],
-            lateout("x6") _,
-            lateout("x7") _,
-            lateout("x8") _,
             options(nostack)
         );
     }

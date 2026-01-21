@@ -279,13 +279,21 @@ fn test_bracket_mismatch_error() {
 
 #[cfg(target_os = "macos")]
 const SYSCALL_WRITE_PROGRAM: &str = "tests/programs/syscall_write_macos.bf";
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const SYSCALL_WRITE_PROGRAM: &str = "tests/programs/syscall_write_linux.bf";
+#[cfg(all(target_os = "linux", target_arch = "x86"))]
+const SYSCALL_WRITE_PROGRAM: &str = "tests/programs/syscall_write_linux.bf";
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+const SYSCALL_WRITE_PROGRAM: &str = "tests/programs/syscall_write_linux_aarch64.bf";
 
 #[cfg(target_os = "macos")]
 const SYSCALL_READ_PROGRAM: &str = "tests/programs/syscall_read_macos.bf";
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const SYSCALL_READ_PROGRAM: &str = "tests/programs/syscall_read_linux.bf";
+#[cfg(all(target_os = "linux", target_arch = "x86"))]
+const SYSCALL_READ_PROGRAM: &str = "tests/programs/syscall_read_linux.bf";
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+const SYSCALL_READ_PROGRAM: &str = "tests/programs/syscall_read_linux_aarch64.bf";
 
 #[test]
 #[cfg(feature = "jit")]
