@@ -35,7 +35,7 @@ Fucker
 
 Usage:
   fucker [--int] [--syscalls] <program>
-  fucker (--ast) <program>
+  fucker (--ast) [--syscalls] <program>
   fucker (-h | --help)
 
 Options:
