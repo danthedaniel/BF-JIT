@@ -76,7 +76,7 @@ impl JITTarget {
     fn new_fragment(context: Rc<RefCell<JITContext>>, nodes: VecDeque<AstNode>) -> Result<Self> {
         let mut bytes = Vec::new();
 
-        code_gen::wrapper(&mut bytes, Self::compile_loop(nodes.clone(), &context));
+        code_gen::wrapper_fragment(&mut bytes, Self::compile_loop(nodes.clone(), &context));
 
         let executable = ExecutableMemory::new(&bytes)
             .context("Failed to create executable memory for JIT fragment")?;

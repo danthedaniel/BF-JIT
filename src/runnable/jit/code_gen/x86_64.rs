@@ -86,6 +86,47 @@ pub fn wrapper(bytes: &mut Vec<u8>, content: Vec<u8>) {
     bytes.push(RET);
 }
 
+/// Wrapper for JIT fragments (deferred loops).
+/// Unlike `wrapper`, this does NOT set r15 (base memory pointer) because
+/// fragments are called from within the main program and should inherit
+/// the base pointer from the caller.
+pub fn wrapper_fragment(bytes: &mut Vec<u8>, content: Vec<u8>) {
+    callee_save_to_stack(bytes);
+
+    // Store pointer to brainfuck memory (first argument) in r10
+    // mov    r10,rdi
+    bytes.push(0x49);
+    bytes.push(0x89);
+    bytes.push(0xfa);
+
+    // NOTE: We do NOT set r15 here - fragments inherit r15 from caller
+
+    // Store pointer to JITTarget (second argument) in r11
+    // mov    r11,rsi
+    bytes.push(0x49);
+    bytes.push(0x89);
+    bytes.push(0xf3);
+
+    // Store pointer to vtable (third argument) in r12
+    // mov    r12,rdx
+    bytes.push(0x49);
+    bytes.push(0x89);
+    bytes.push(0xd4);
+
+    bytes.extend(content);
+
+    // Return the data pointer
+    // mov    rax,r10
+    bytes.push(0x4c);
+    bytes.push(0x89);
+    bytes.push(0xd0);
+
+    callee_restore_from_stack(bytes);
+
+    // ret
+    bytes.push(RET);
+}
+
 fn callee_restore_from_stack(bytes: &mut Vec<u8>) {
     // pop    r15
     bytes.push(0x41);

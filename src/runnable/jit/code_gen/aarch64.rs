@@ -64,6 +64,39 @@ pub fn wrapper(bytes: &mut Vec<u8>, content: Vec<u8>) {
     emit_u32(bytes, RET);
 }
 
+/// Wrapper for JIT fragments (deferred loops).
+/// Unlike `wrapper`, this does NOT set x22 (base memory pointer) because
+/// fragments are called from within the main program and should inherit
+/// the base pointer from the caller.
+pub fn wrapper_fragment(bytes: &mut Vec<u8>, content: Vec<u8>) {
+    callee_save_to_stack(bytes);
+
+    // Store pointer to brainfuck memory (first argument x0) in x19
+    // mov x19, x0
+    emit_u32(bytes, 0xaa00_03f3);
+
+    // NOTE: We do NOT set x22 here - fragments inherit x22 from caller
+
+    // Store pointer to JITTarget (second argument x1) in x20
+    // mov x20, x1
+    emit_u32(bytes, 0xaa01_03f4);
+
+    // Store pointer to vtable (third argument x2) in x21
+    // mov x21, x2
+    emit_u32(bytes, 0xaa02_03f5);
+
+    bytes.extend(content);
+
+    // Return the data pointer
+    // mov x0, x19
+    emit_u32(bytes, 0xaa13_03e0);
+
+    callee_restore_from_stack(bytes);
+
+    // ret
+    emit_u32(bytes, RET);
+}
+
 fn callee_restore_from_stack(bytes: &mut Vec<u8>) {
     // Restore callee-saved registers
     // ldp x21, x22, [sp], #16
