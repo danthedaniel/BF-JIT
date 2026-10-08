@@ -255,14 +255,68 @@ impl Atom {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Expr {
     constant: u8,
-    terms: BTreeMap<Atom, u8>,
+    terms: Terms,
+}
+
+/// Atoms with non-zero coefficients, sorted by atom. Expressions rarely have
+/// more than a few terms, so a vector is much cheaper than a map.
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+struct Terms(Vec<(Atom, u8)>);
+
+impl Terms {
+    fn get(&self, atom: &Atom) -> Option<&u8> {
+        let index = self.0.binary_search_by(|(other, _)| other.cmp(atom)).ok()?;
+        Some(&self.0[index].1)
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (&Atom, &u8)> {
+        self.0.iter().map(|(atom, coefficient)| (atom, coefficient))
+    }
+
+    fn keys(&self) -> impl Iterator<Item = &Atom> {
+        self.0.iter().map(|(atom, _)| atom)
+    }
+
+    const fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    const fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    fn add(&mut self, atom: Atom, coefficient: u8) {
+        match self.0.binary_search_by(|(other, _)| other.cmp(&atom)) {
+            Ok(index) => {
+                let entry = &mut self.0[index].1;
+                *entry = entry.wrapping_add(coefficient);
+                if *entry == 0 {
+                    self.0.remove(index);
+                }
+            }
+            Err(index) if coefficient != 0 => self.0.insert(index, (atom, coefficient)),
+            Err(_) => {}
+        }
+    }
+}
+
+impl<'a> IntoIterator for &'a Terms {
+    type Item = (&'a Atom, &'a u8);
+    type IntoIter = std::iter::Map<
+        std::slice::Iter<'a, (Atom, u8)>,
+        fn(&'a (Atom, u8)) -> (&'a Atom, &'a u8),
+    >;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter().map(|(atom, coefficient)| (atom, coefficient))
+    }
 }
 
 impl Expr {
-    fn constant(value: u8) -> Self {
+    const fn constant(value: u8) -> Self {
         Self {
             constant: value,
-            terms: BTreeMap::new(),
+            terms: Terms(Vec::new()),
         }
     }
 
@@ -273,7 +327,7 @@ impl Expr {
     fn atom(atom: Atom) -> Self {
         Self {
             constant: 0,
-            terms: BTreeMap::from([(atom, 1)]),
+            terms: Terms(vec![(atom, 1)]),
         }
     }
 
@@ -330,9 +384,9 @@ impl Expr {
 
     /// This expression as an operand, if it depends on at most one cell.
     fn as_operand(&self) -> Option<Operand> {
-        match self.terms.iter().collect::<Vec<_>>()[..] {
+        match self.terms.0[..] {
             [] => Some(Operand::constant(self.constant)),
-            [(&Atom::Cell(cell), &scale)] => Some(Operand {
+            [(Atom::Cell(cell), scale)] => Some(Operand {
                 cell,
                 scale,
                 bias: self.constant,
@@ -343,19 +397,15 @@ impl Expr {
 
     /// Whether this expression is always 0 or 1.
     fn is_boolean(&self) -> bool {
-        match self.terms.iter().collect::<Vec<_>>()[..] {
+        match self.terms.0[..] {
             [] => self.constant <= 1,
-            [(Atom::Less(..), &k)] => matches!((k, self.constant), (1, 0) | (u8::MAX, 1)),
+            [(Atom::Less(..), k)] => matches!((k, self.constant), (1, 0) | (u8::MAX, 1)),
             _ => false,
         }
     }
 
     fn add_term(&mut self, atom: Atom, coefficient: u8) {
-        let entry = self.terms.entry(atom).or_insert(0);
-        *entry = entry.wrapping_add(coefficient);
-        if *entry == 0 {
-            self.terms.retain(|_, coefficient| *coefficient != 0);
-        }
+        self.terms.add(atom, coefficient);
     }
 
     fn add_scaled(&mut self, other: &Self, factor: u8) {
