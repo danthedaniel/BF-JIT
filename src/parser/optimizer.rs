@@ -387,44 +387,99 @@ struct Expr {
 }
 
 /// Atoms with non-zero coefficients, sorted by atom. Expressions rarely have
-/// more than a few terms, so a vector is much cheaper than a map.
-#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
-struct Terms(Vec<(Atom, u8)>);
+/// more than a few terms, so a vector is much cheaper than a map, and most
+/// have at most one, which is kept inline.
+#[derive(Clone, Debug, Default)]
+enum Terms {
+    #[default]
+    None,
+    One((Atom, u8)),
+    Many(Vec<(Atom, u8)>),
+}
 
 impl Terms {
+    fn as_slice(&self) -> &[(Atom, u8)] {
+        match self {
+            Self::None => &[],
+            Self::One(term) => std::slice::from_ref(term),
+            Self::Many(terms) => terms,
+        }
+    }
+
     fn get(&self, atom: &Atom) -> Option<&u8> {
-        let index = self.0.binary_search_by(|(other, _)| other.cmp(atom)).ok()?;
-        Some(&self.0[index].1)
+        let terms = self.as_slice();
+        let index = terms.binary_search_by(|(other, _)| other.cmp(atom)).ok()?;
+        Some(&terms[index].1)
     }
 
     fn iter(&self) -> impl Iterator<Item = (&Atom, &u8)> {
-        self.0.iter().map(|(atom, coefficient)| (atom, coefficient))
+        self.into_iter()
     }
 
     fn keys(&self) -> impl Iterator<Item = &Atom> {
-        self.0.iter().map(|(atom, _)| atom)
+        self.as_slice().iter().map(|(atom, _)| atom)
     }
 
-    const fn len(&self) -> usize {
-        self.0.len()
+    fn len(&self) -> usize {
+        self.as_slice().len()
     }
 
-    const fn is_empty(&self) -> bool {
-        self.0.is_empty()
+    fn is_empty(&self) -> bool {
+        self.as_slice().is_empty()
     }
 
     fn add(&mut self, atom: Atom, coefficient: u8) {
-        match self.0.binary_search_by(|(other, _)| other.cmp(&atom)) {
-            Ok(index) => {
-                let entry = &mut self.0[index].1;
+        if coefficient == 0 {
+            return;
+        }
+        match self {
+            Self::None => *self = Self::One((atom, coefficient)),
+            Self::One((other, entry)) if *other == atom => {
                 *entry = entry.wrapping_add(coefficient);
                 if *entry == 0 {
-                    self.0.remove(index);
+                    *self = Self::None;
                 }
             }
-            Err(index) if coefficient != 0 => self.0.insert(index, (atom, coefficient)),
-            Err(_) => {}
+            Self::One(_) => {
+                let Self::One(term) = std::mem::take(self) else {
+                    unreachable!()
+                };
+                let mut terms = vec![term, (atom, coefficient)];
+                terms.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
+                *self = Self::Many(terms);
+            }
+            Self::Many(terms) => match terms.binary_search_by(|(other, _)| other.cmp(&atom)) {
+                Ok(index) => {
+                    let entry = &mut terms[index].1;
+                    *entry = entry.wrapping_add(coefficient);
+                    if *entry == 0 {
+                        terms.remove(index);
+                    }
+                }
+                Err(index) => terms.insert(index, (atom, coefficient)),
+            },
         }
+    }
+}
+
+// Terms are compared as sorted lists, however they're stored.
+impl PartialEq for Terms {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_slice() == other.as_slice()
+    }
+}
+
+impl Eq for Terms {}
+
+impl PartialOrd for Terms {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Terms {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.as_slice().cmp(other.as_slice())
     }
 }
 
@@ -436,7 +491,9 @@ impl<'a> IntoIterator for &'a Terms {
     >;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.0.iter().map(|(atom, coefficient)| (atom, coefficient))
+        self.as_slice()
+            .iter()
+            .map(|(atom, coefficient)| (atom, coefficient))
     }
 }
 
@@ -444,7 +501,7 @@ impl Expr {
     const fn constant(value: u8) -> Self {
         Self {
             constant: value,
-            terms: Terms(Vec::new()),
+            terms: Terms::None,
         }
     }
 
@@ -455,7 +512,7 @@ impl Expr {
     fn atom(atom: Atom) -> Self {
         Self {
             constant: 0,
-            terms: Terms(vec![(atom, 1)]),
+            terms: Terms::One((atom, 1)),
         }
     }
 
@@ -508,7 +565,7 @@ impl Expr {
 
     /// Whether this expression is just `atom`.
     fn is_atom(&self, atom: &Atom) -> bool {
-        self.constant == 0 && matches!(&self.terms.0[..], [(other, 1)] if other == atom)
+        self.constant == 0 && matches!(self.terms.as_slice(), [(other, 1)] if other == atom)
     }
 
     fn as_constant(&self) -> Option<u8> {
@@ -517,7 +574,7 @@ impl Expr {
 
     /// This expression as an operand, if it depends on at most one cell.
     fn as_operand(&self) -> Option<Operand> {
-        match self.terms.0[..] {
+        match *self.terms.as_slice() {
             [] => Some(Operand::constant(self.constant)),
             [(Atom::Cell(cell), scale)] => Some(Operand {
                 cell,
@@ -530,7 +587,7 @@ impl Expr {
 
     /// Whether this expression is always 0 or 1.
     fn is_boolean(&self) -> bool {
-        match self.terms.0[..] {
+        match *self.terms.as_slice() {
             [] => self.constant <= 1,
             [(Atom::Less(..), k)] => matches!((k, self.constant), (1, 0) | (u8::MAX, 1)),
             _ => false,
