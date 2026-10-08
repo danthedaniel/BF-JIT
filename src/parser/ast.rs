@@ -123,8 +123,18 @@ impl AstNode {
             let next_node = match character {
                 '+' => AstNode::Add(0, 1),
                 '-' => AstNode::Add(0, u8::MAX),
-                '>' => AstNode::Move(1),
-                '<' => AstNode::Move(-1),
+                '>' | '<' => {
+                    let amount = if character == '>' { 1 } else { -1 };
+                    let nodes = loops.last_mut().unwrap_or(&mut output);
+                    // Merge runs of pointer movement, which is most of a
+                    // typical program. Moves cancelling out are kept since
+                    // `[<>-]` isn't the same as `[-]` to the optimizer.
+                    if let Some(AstNode::Move(total)) = nodes.last_mut() {
+                        *total += amount;
+                        continue;
+                    }
+                    AstNode::Move(amount)
+                }
                 '.' => AstNode::Print(0),
                 ',' => AstNode::Read(0),
                 '%' if enable_syscalls => AstNode::Syscall,
