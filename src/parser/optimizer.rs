@@ -1570,14 +1570,26 @@ fn optimize_block(nodes: Vec<Raw>, mut known: Known, live: &Live) -> Vec<AstNode
     // The knowledge about cells after `run`
     let mut after_run = KnownAfterRun::new(known.clone());
 
-    // The cells used after each loop, relative to its pointer.
-    let mut live_after_loops = Vec::new();
+    // The cells used after each loop, and those used by it or after it,
+    // relative to its pointer.
+    let mut live_around_loops = Vec::new();
     let mut current = live.clone();
     for node in nodes.iter().rev() {
-        if matches!(node, Raw::Loop(..)) {
-            live_after_loops.push(current.clone());
-        }
+        let Raw::Loop(_, summary) = node else {
+            current = current.into_before(node);
+            continue;
+        };
+        let after = current.clone();
         current = current.into_before(node);
+        let before = if summary.clear {
+            let mut before = after.clone();
+            before.union(&summary.reads);
+            before
+        } else {
+            // That's what the cells live before a loop are, unless it's `[-]`.
+            current.clone()
+        };
+        live_around_loops.push((after, before));
     }
 
     // `live` is relative to the pointer at the end of the run, which is
@@ -1603,11 +1615,8 @@ fn optimize_block(nodes: Vec<Raw>, mut known: Known, live: &Live) -> Vec<AstNode
     for node in nodes {
         match node {
             Raw::Node(AstNode::Move(amount)) => offset += amount,
-            Raw::Loop(body, summary) => {
-                let live_after = &live_after_loops.pop().unwrap();
-                let mut live_before = live_after.clone();
-                live_before.union(&summary.reads);
-                let live_before = &live_before;
+            Raw::Loop(body, _) => {
+                let (live_after, live_before) = &live_around_loops.pop().unwrap();
                 if run.len() > MAX_RUN {
                     flush_run(&mut run, &mut known, &mut output, live_before, offset);
                     after_run = KnownAfterRun::new(known.clone());
