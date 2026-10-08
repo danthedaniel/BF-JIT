@@ -359,6 +359,18 @@ impl CellCache {
     }
 }
 
+/// Whether a node can be part of a run compiled by `straight_line`.
+pub const fn is_straight_line(node: &AstNode) -> bool {
+    matches!(
+        node,
+        AstNode::Add(..)
+            | AstNode::Set(..)
+            | AstNode::MulAdd { .. }
+            | AstNode::CondAdd { .. }
+            | AstNode::ProductAdd { .. }
+    )
+}
+
 /// Compile a run of straight-line nodes. Cells are kept in registers and
 /// written back at the end.
 pub fn straight_line(bytes: &mut Vec<u8>, nodes: &[AstNode]) {

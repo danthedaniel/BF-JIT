@@ -12,8 +12,10 @@ use crate::runnable::jit::executable_memory::VTable;
 use crate::runnable::syscall::{execute_syscall, parse_syscall_args};
 use crate::runnable::{BF_MEMORY_SIZE, Runnable};
 
-/// Set arbitrarily
-const INLINE_THRESHOLD: usize = 0x16;
+/// Loops with fewer nodes than this (not counting nested loops' bodies) are
+/// compiled inline rather than deferred. Calling a deferred loop costs
+/// saving and restoring registers, which adds up for short hot loops.
+const INLINE_THRESHOLD: usize = 0x100;
 
 pub struct JITContext {
     /// All non-root `JITTargets` in the program
@@ -97,18 +99,16 @@ impl JITTarget {
         let mut nodes = nodes.into_iter().peekable();
 
         while let Some(node) = nodes.next() {
-            match node {
-                AstNode::Add(..)
-                | AstNode::Set(..)
-                | AstNode::MulAdd { .. }
-                | AstNode::CondAdd { .. }
-                | AstNode::ProductAdd { .. } => {
-                    let mut run = vec![node];
-                    while let Some(next) = nodes.next_if(Self::is_straight_line) {
-                        run.push(next);
-                    }
-                    code_gen::straight_line(&mut bytes, &run);
+            if code_gen::is_straight_line(&node) {
+                let mut run = vec![node];
+                while let Some(next) = nodes.next_if(code_gen::is_straight_line) {
+                    run.push(next);
                 }
+                code_gen::straight_line(&mut bytes, &run);
+                continue;
+            }
+
+            match node {
                 AstNode::DivMod { .. } => code_gen::div_mod(&mut bytes, &node),
                 AstNode::Skip { exits, steps } => code_gen::skip(&mut bytes, &exits, &steps),
                 AstNode::Move(n) => code_gen::move_pointer(&mut bytes, n),
@@ -120,35 +120,30 @@ impl JITTarget {
                 }
                 AstNode::Loop(nodes) => bytes.extend(Self::defer_loop(nodes, context)),
                 AstNode::Syscall => code_gen::syscall(&mut bytes),
+                _ => unreachable!("straight-line node: {node:?}"),
             }
         }
 
         bytes
     }
 
-    const fn is_straight_line(node: &AstNode) -> bool {
-        matches!(
-            node,
-            AstNode::Add(..)
-                | AstNode::Set(..)
-                | AstNode::MulAdd { .. }
-                | AstNode::CondAdd { .. }
-                | AstNode::ProductAdd { .. }
-        )
-    }
-
     /// Perform AOT compilation on a loop.
     fn compile_loop(mut nodes: Vec<AstNode>, context: &Rc<RefCell<JITContext>>) -> Vec<u8> {
         let mut bytes = Vec::new();
 
-        #[cfg(target_arch = "aarch64")]
-        if nodes.iter().all(Self::is_straight_line) && code_gen::register_loop(&mut bytes, &nodes) {
+        let straight_line = nodes.iter().all(code_gen::is_straight_line);
+        if straight_line && code_gen::register_loop(&mut bytes, &nodes) {
             return bytes;
         }
 
-        // Fold the pointer movement at the end of the body into the loop condition.
+        // Fold the pointer movement at the end of the body into the loop
+        // condition, unless it's part of straight-line code at the end of the
+        // body.
+        let in_run = nodes.len() >= 2
+            && code_gen::is_straight_line(&nodes[nodes.len() - 1])
+            && code_gen::is_straight_line(&nodes[nodes.len() - 2]);
         let trailing_move = match nodes.last() {
-            Some(&AstNode::Move(n)) => {
+            Some(&AstNode::Move(n)) if !in_run => {
                 nodes.pop();
                 n
             }
