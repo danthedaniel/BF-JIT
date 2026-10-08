@@ -574,19 +574,10 @@ impl CellCache {
                 }
                 let lhs_reg = lhs.reads().map(|cell| self.read(bytes, cell));
                 let rhs_reg = rhs.reads().map(|cell| self.read(bytes, cell));
-                let constant = self.constant(dst);
-                let dst_reg = if constant.is_some() {
-                    self.overwrite(bytes, dst)
-                } else {
-                    self.modify(bytes, dst)
-                };
-                conditional_add(
-                    bytes,
-                    (lhs, lhs_reg),
-                    (rhs, rhs_reg),
-                    (dst_reg, constant),
-                    value,
-                );
+                let dst = self.conditional_dst(bytes, dst);
+                conditional_add(bytes, dst, value, |bytes| {
+                    compare(bytes, (lhs, lhs_reg), (rhs, rhs_reg))
+                });
             }
             AstNode::ProductAdd {
                 base,
@@ -606,16 +597,84 @@ impl CellCache {
             _ => unreachable!("not a straight-line node: {node:?}"),
         }
     }
+
+    /// Get the register and known constant value of a cell which is about to
+    /// be conditionally added to, for `conditional_add`.
+    fn conditional_dst(&mut self, bytes: &mut Vec<u8>, offset: i32) -> (u8, Option<u8>) {
+        match self.constant(offset) {
+            Some(constant) => (self.overwrite(bytes, offset), Some(constant)),
+            None => (self.modify(bytes, offset), None),
+        }
+    }
+
+    /// Compile a byte-wise addition with carry out:
+    ///
+    ///     CondAdd { lhs: ~x, rhs: y, dst: carry, value }
+    ///     MulAdd { src: y, dst: x, factor: 1 }
+    ///
+    /// `~x < y` exactly when adding `y` to `x` carries, so this is a byte add
+    /// followed by adding the carry flag. Returns false if the nodes don't
+    /// match.
+    fn add_with_carry(&mut self, bytes: &mut Vec<u8>, node: &AstNode, next: &AstNode) -> bool {
+        let AstNode::CondAdd {
+            lhs,
+            rhs,
+            dst,
+            value,
+        } = *node
+        else {
+            return false;
+        };
+        let (x, y) = (lhs.cell, rhs.cell);
+        if (lhs.scale, lhs.bias, rhs.scale, rhs.bias) != (u8::MAX, u8::MAX, 1, 0)
+            || *next
+                != (AstNode::MulAdd {
+                    src: y,
+                    dst: x,
+                    factor: 1,
+                })
+            || x == y
+            || dst == x
+            || dst == y
+            || self.constant(x).is_some()
+            || self.constant(y).is_some()
+        {
+            return false;
+        }
+
+        let y_reg = self.read(bytes, y);
+        let x_reg = self.modify(bytes, x);
+        let dst = self.conditional_dst(bytes, dst);
+        conditional_add(bytes, dst, value, |bytes| {
+            // add <x>b, <y>b
+            reg_op(bytes, &[0x00], y_reg, x_reg, true);
+            CC_B
+        });
+        true
+    }
+
+    /// Compile straight-line nodes in order.
+    fn compile(&mut self, bytes: &mut Vec<u8>, nodes: &[AstNode]) {
+        let mut position = 0;
+        while position < nodes.len() {
+            self.position = position;
+            if let Some(next) = nodes.get(position + 1)
+                && self.add_with_carry(bytes, &nodes[position], next)
+            {
+                position += 2;
+            } else {
+                self.node(bytes, &nodes[position]);
+                position += 1;
+            }
+        }
+    }
 }
 
 /// Compile a run of `Add`, `Set`, `MulAdd`, `CondAdd` and `ProductAdd` nodes.
 /// Cells are kept in registers and written back at the end.
 pub fn straight_line(bytes: &mut Vec<u8>, nodes: &[AstNode]) {
     let mut cache = CellCache::new(nodes);
-    for (position, node) in nodes.iter().enumerate() {
-        cache.position = position;
-        cache.node(bytes, node);
-    }
+    cache.compile(bytes, nodes);
     cache.flush(bytes);
 }
 
@@ -666,9 +725,7 @@ pub fn register_loop(bytes: &mut Vec<u8>, nodes: &[AstNode]) -> bool {
     let counter = cache.read(&mut head, 0);
 
     let mut body = Vec::new();
-    for node in nodes {
-        cache.node(&mut body, node);
-    }
+    cache.compile(&mut body, nodes);
     // A loop which sets its counter runs at most once (or forever), so loading
     // every cell up front doesn't pay off.
     if cache.constant(0).is_some() {
@@ -781,15 +838,15 @@ fn compare(bytes: &mut Vec<u8>, lhs: (Operand, Option<u8>), rhs: (Operand, Optio
     }
 }
 
-/// e<rd> += value if lhs < rhs, without branching. Operands which read a cell
-/// come with its register. `rd` comes with the cell's constant value if it's
-/// known, in which case the register doesn't hold it yet.
+/// e<rd> += value if a condition holds, without branching. `compare` sets the
+/// flags and returns the condition code (`CC_B` or `CC_AE`). `rd` comes with
+/// the cell's constant value if it's known, in which case the register
+/// doesn't hold it yet.
 fn conditional_add(
     bytes: &mut Vec<u8>,
-    lhs: (Operand, Option<u8>),
-    rhs: (Operand, Option<u8>),
     (rd, constant): (u8, Option<u8>),
     value: u8,
+    compare: impl FnOnce(&mut Vec<u8>) -> u8,
 ) {
     // Whether the result is just the condition (or its inverse), as a byte
     let flag = matches!((constant, value), (Some(0), 1) | (Some(1), u8::MAX));
@@ -802,7 +859,7 @@ fn conditional_add(
         None => {}
     }
 
-    let cc = compare(bytes, lhs, rhs);
+    let cc = compare(bytes);
     if flag {
         // Inverting a condition code flips its lowest bit.
         let cc = if constant == Some(0) { cc } else { cc ^ 1 };

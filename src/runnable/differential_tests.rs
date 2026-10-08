@@ -282,16 +282,43 @@ fn random_operand(rng: &mut Rng, cells: usize) -> Operand {
     }
 }
 
-/// A random straight-line node. Loop bodies don't write to the counter.
-fn random_node(rng: &mut Rng, cells: usize, in_loop: bool) -> AstNode {
-    let dst = loop {
+/// A random cell, other than the loop counter if in a loop.
+fn random_dst(rng: &mut Rng, cells: usize, in_loop: bool) -> i32 {
+    loop {
         let cell = random_cell(rng, cells);
         if !in_loop || cell != 0 {
-            break cell;
+            return cell;
         }
-    };
+    }
+}
+
+/// A random straight-line node, or a byte addition with carry. Loop bodies
+/// don't write to the counter.
+fn random_nodes(rng: &mut Rng, cells: usize, in_loop: bool) -> Vec<AstNode> {
+    let dst = random_dst(rng, cells, in_loop);
     let value = [1, 255, random_byte(rng)][rng.below(3)];
-    match rng.below(6) {
+    if rng.below(7) == 0 {
+        let sum = random_dst(rng, cells, in_loop);
+        let addend = random_cell(rng, cells);
+        return vec![
+            AstNode::CondAdd {
+                lhs: Operand {
+                    cell: sum,
+                    scale: 255,
+                    bias: 255,
+                },
+                rhs: Operand::cell(addend),
+                dst,
+                value,
+            },
+            AstNode::MulAdd {
+                src: addend,
+                dst: sum,
+                factor: 1,
+            },
+        ];
+    }
+    vec![match rng.below(6) {
         0 => AstNode::Add(dst, random_byte(rng)),
         1 => AstNode::Set(dst, random_byte(rng)),
         2 => AstNode::MulAdd {
@@ -313,7 +340,7 @@ fn random_node(rng: &mut Rng, cells: usize, in_loop: bool) -> AstNode {
             dst,
             value,
         },
-    }
+    }]
 }
 
 /// Random straight-line code on cells read from input, so they aren't known
@@ -331,12 +358,12 @@ fn straight_line_matches_interpreter() {
 
         let in_loop = rng.below(2) == 0;
         let mut body: Vec<_> = (0..rng.below(40))
-            .map(|_| random_node(&mut rng, cells, in_loop))
+            .flat_map(|_| random_nodes(&mut rng, cells, in_loop))
             .collect();
         if in_loop {
             body.push(AstNode::Add(0, 255));
             ast.push(AstNode::Loop(body));
-            ast.extend((0..rng.below(8)).map(|_| random_node(&mut rng, cells, false)));
+            ast.extend((0..rng.below(8)).flat_map(|_| random_nodes(&mut rng, cells, false)));
         } else {
             ast.extend(body);
         }
