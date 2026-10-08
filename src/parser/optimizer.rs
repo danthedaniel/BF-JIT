@@ -4,7 +4,7 @@
 //! effect are replaced by straight-line code, and straight-line code is
 //! symbolically executed and re-emitted with the minimum number of writes.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
 
 use super::{AstNode, Operand};
@@ -177,7 +177,7 @@ impl Known {
 
 /// The cells whose current value may be read later, relative to the data
 /// pointer.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 enum Live {
     All,
     /// Cells `cell + shift` for each `cell` in the sorted deque. Shifting is
@@ -185,6 +185,23 @@ enum Live {
     /// these are cloned for every loop, and a deque since code often walks
     /// the tape backwards, inserting at the front.
     Cells(VecDeque<i32>, i32),
+}
+
+impl Clone for Live {
+    fn clone(&self) -> Self {
+        match self {
+            Self::All => Self::All,
+            Self::Cells(cells, shift) => {
+                // Copying the cells in bulk is much faster than cloning the
+                // deque, which copies them one by one.
+                let (front, back) = cells.as_slices();
+                let mut copy = Vec::with_capacity(cells.len());
+                copy.extend_from_slice(front);
+                copy.extend_from_slice(back);
+                Self::Cells(copy.into(), *shift)
+            }
+        }
+    }
 }
 
 impl Live {
@@ -1060,12 +1077,19 @@ impl<'a> Schedule<'a> {
             }
         }
 
-        let mut queue: BTreeSet<usize> = (0..self.uses.len())
+        // Tasks ready to run, in descending order so the first is popped.
+        let mut queue: Vec<usize> = (0..self.uses.len())
+            .rev()
             .filter(|&task| self.ready(task, &missing))
             .collect();
+        let enqueue = |queue: &mut Vec<usize>, task: usize| {
+            if let Err(index) = queue.binary_search_by(|other| task.cmp(other)) {
+                queue.insert(index, task);
+            }
+        };
 
         let mut done = 0;
-        while let Some(task) = queue.pop_first() {
+        while let Some(task) = queue.pop() {
             done += 1;
 
             if let Some(offset) = self.written_by(task) {
@@ -1081,7 +1105,7 @@ impl<'a> Schedule<'a> {
                 for &dependent in &dependents[index] {
                     missing[dependent] -= 1;
                     if self.ready(dependent, &missing) {
-                        queue.insert(dependent);
+                        enqueue(&mut queue, dependent);
                     }
                 }
             }
@@ -1099,7 +1123,7 @@ impl<'a> Schedule<'a> {
                     if let Some(write) = self.write_task(cell)
                         && self.ready(write, &missing)
                     {
-                        queue.insert(write);
+                        enqueue(&mut queue, write);
                     }
                 }
             }
