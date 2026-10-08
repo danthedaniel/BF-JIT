@@ -72,39 +72,55 @@ impl Known {
 #[derive(Clone, Debug)]
 enum Live {
     All,
-    /// Cells `cell + shift` for each `cell` in the set. Shifting is lazy since
-    /// unoptimized code moves the pointer a lot.
-    Cells(BTreeSet<i32>, i32),
+    /// Cells `cell + shift` for each `cell` in the sorted vector. Shifting is
+    /// lazy since unoptimized code moves the pointer a lot. A vector rather
+    /// than a tree since these are cloned for every loop.
+    Cells(Vec<i32>, i32),
 }
 
 impl Live {
-    fn none() -> Self {
-        Self::Cells(BTreeSet::new(), 0)
+    const fn none() -> Self {
+        Self::Cells(Vec::new(), 0)
     }
 
     fn contains(&self, offset: i32) -> bool {
         match self {
             Self::All => true,
-            Self::Cells(cells, shift) => cells.contains(&(offset - shift)),
+            Self::Cells(cells, shift) => cells.binary_search(&(offset - shift)).is_ok(),
         }
     }
 
     fn insert(&mut self, offset: i32) {
-        if let Self::Cells(cells, shift) = self {
-            cells.insert(offset - *shift);
+        if let Self::Cells(cells, shift) = self
+            && let Err(index) = cells.binary_search(&(offset - *shift))
+        {
+            cells.insert(index, offset - *shift);
         }
     }
 
     fn remove(&mut self, offset: i32) {
-        if let Self::Cells(cells, shift) = self {
-            cells.remove(&(offset - *shift));
+        if let Self::Cells(cells, shift) = self
+            && let Ok(index) = cells.binary_search(&(offset - *shift))
+        {
+            cells.remove(index);
         }
     }
 
     fn union(&mut self, other: &Self) {
         match (&mut *self, other) {
             (Self::Cells(cells, shift), Self::Cells(others, other_shift)) => {
-                cells.extend(others.iter().map(|cell| cell + other_shift - *shift));
+                let delta = other_shift - *shift;
+                let mut others = others.iter().map(|cell| cell + delta).peekable();
+                let mut merged = Vec::with_capacity(cells.len() + others.len());
+                for &cell in &*cells {
+                    while let Some(other) = others.next_if(|&other| other < cell) {
+                        merged.push(other);
+                    }
+                    others.next_if_eq(&cell);
+                    merged.push(cell);
+                }
+                merged.extend(others);
+                *cells = merged;
             }
             _ => *self = Self::All,
         }
@@ -1042,19 +1058,17 @@ enum OptimizedLoop {
 }
 
 /// Optimize the body of a loop and try to replace the loop with something
-/// cheaper. `entry` describes the cells when the loop is reached and `exit`
-/// the cells used after it.
-fn optimize_loop(body: Vec<Raw>, summary: &Summary, entry: &Known, exit: &Live) -> OptimizedLoop {
-    // The body's result is used by the next iteration or after the loop.
-    let mut live = exit.clone();
-    live.union(&summary.reads);
-    let body = optimize_block(body, Known::default(), &live);
+/// cheaper. `entry` describes the cells when the loop is reached, `exit` the
+/// cells used after it and `live` the cells used by the next iteration or
+/// after the loop.
+fn optimize_loop(body: Vec<Raw>, entry: &Known, exit: &Live, live: &Live) -> OptimizedLoop {
+    let body = optimize_block(body, Known::default(), live);
 
     if let [AstNode::Move(stride)] = body[..] {
         return OptimizedLoop::Node(AstNode::Scan(stride));
     }
 
-    solve_loop(&body, entry, exit, &live).unwrap_or(OptimizedLoop::Node(AstNode::Loop(body)))
+    solve_loop(&body, entry, exit, live).unwrap_or(OptimizedLoop::Node(AstNode::Loop(body)))
 }
 
 /// Computes the total effect of a loop which runs `iterations` times.
@@ -1310,7 +1324,7 @@ fn optimize_block(nodes: Vec<Raw>, mut known: Known, live: &Live) -> Vec<AstNode
                 let mut entry = known_after_run(&run, known.clone());
                 entry.shift(offset);
 
-                match optimize_loop(body, &summary, &entry, live_after) {
+                match optimize_loop(body, &entry, live_after, live_before) {
                     OptimizedLoop::Inline(nodes) => {
                         run.extend(nodes.iter().map(|node| shift(node, offset)));
                     }
