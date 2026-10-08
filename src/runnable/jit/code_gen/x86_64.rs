@@ -1,3 +1,5 @@
+use std::collections::{BTreeMap, HashMap};
+
 use crate::parser::{AstNode, Operand};
 use crate::runnable::jit::executable_memory::VTableEntry;
 use crate::runnable::jit::jit_promise::JITPromiseID;
@@ -330,11 +332,12 @@ fn movzx(bytes: &mut Vec<u8>, dst: u8, src: u8) {
     reg_op(bytes, &[0x0f, 0xb6], dst, src, true);
 }
 
-/// A memory cell held in a register.
+/// A memory cell whose value is known, either in a register or as a constant.
 #[derive(Clone, Copy)]
 struct Entry {
-    offset: i32,
-    reg: u8,
+    /// The register allocated to the cell, if any. Cells which aren't known
+    /// constants always have one.
+    reg: Option<u8>,
     /// Whether memory is out of date
     dirty: bool,
     /// The cell's value if it's a known constant
@@ -347,64 +350,123 @@ struct Entry {
 /// Memory cells held in registers during straight-line code.
 #[derive(Default)]
 struct CellCache {
-    /// Least recently used first
-    entries: Vec<Entry>,
+    entries: BTreeMap<i32, Entry>,
+    /// The cell each cache register is allocated to
+    holders: [Option<i32>; CACHE_REGS.len()],
+    /// Indexes of the nodes accessing each cell, and whether they read it
+    accesses: HashMap<i32, Vec<(usize, bool)>>,
+    /// Index of the node being compiled
+    position: usize,
 }
 
 impl CellCache {
-    /// Find or allocate the entry for a cell, loading it from memory if `load`
-    /// is set. Returns its index, which stays valid until the next lookup.
-    fn entry(&mut self, bytes: &mut Vec<u8>, offset: i32, load: bool) -> usize {
-        if let Some(index) = self.entries.iter().position(|entry| entry.offset == offset) {
-            let entry = self.entries.remove(index);
-            self.entries.push(entry);
-            return self.entries.len() - 1;
+    /// A cache for compiling `nodes` in order, which evicts the cells needed
+    /// furthest in the future when it runs out of registers.
+    fn new(nodes: &[AstNode]) -> Self {
+        let mut cache = Self::default();
+        for (position, node) in nodes.iter().enumerate() {
+            let read = !matches!(node, AstNode::Set(..));
+            for cell in accessed_cells(node) {
+                cache
+                    .accesses
+                    .entry(cell)
+                    .or_default()
+                    .push((position, read));
+            }
         }
+        cache
+    }
 
-        let reg = if self.entries.len() < CACHE_REGS.len() {
-            CACHE_REGS[self.entries.len()]
-        } else {
-            let evicted = self.entries.remove(0);
-            Self::write_back(bytes, evicted);
-            evicted.reg
+    /// The first access to a cell at or after the current node.
+    fn next_access(&self, offset: i32) -> Option<(usize, bool)> {
+        let accesses = self.accesses.get(&offset)?;
+        let index = accesses.partition_point(|&(position, _)| position < self.position);
+        accesses.get(index).copied()
+    }
+
+    /// Free up a register, preferring the cell whose value is needed furthest
+    /// in the future and then cells which don't have to be stored.
+    fn evict(&mut self, bytes: &mut Vec<u8>) -> usize {
+        let key = |offset: i32| {
+            let entry = self.entries[&offset];
+            let next_read = match self.next_access(offset) {
+                // Cells accessed by the current node are always needed.
+                Some((position, read)) if read || position == self.position => position,
+                // Cells which are overwritten next or never accessed again
+                _ => usize::MAX,
+            };
+            (next_read, entry.constant.is_some() || !entry.dirty)
         };
+        let slot = (0..CACHE_REGS.len())
+            .max_by_key(|&slot| key(self.holders[slot].unwrap()))
+            .unwrap();
 
-        if load {
-            load_cell(bytes, reg, offset);
+        let offset = self.holders[slot].take().unwrap();
+        let overwritten = matches!(self.next_access(offset), Some((_, false)));
+        let entry = self.entries.get_mut(&offset).unwrap();
+        if entry.constant.is_some() {
+            // The constant is still known.
+            entry.reg = None;
+            entry.materialized = false;
+        } else {
+            if entry.dirty && !overwritten {
+                store_cell(bytes, CACHE_REGS[slot], offset);
+            }
+            self.entries.remove(&offset);
         }
-        self.entries.push(Entry {
-            offset,
-            reg,
-            dirty: false,
-            constant: None,
-            materialized: load,
-        });
-        self.entries.len() - 1
+        slot
+    }
+
+    /// Allocate a register to a cell.
+    fn allocate(&mut self, bytes: &mut Vec<u8>, offset: i32) -> u8 {
+        let slot = match self.holders.iter().position(Option::is_none) {
+            Some(slot) => slot,
+            None => self.evict(bytes),
+        };
+        self.holders[slot] = Some(offset);
+        CACHE_REGS[slot]
     }
 
     /// The known constant value of a cell, without loading it.
     fn constant(&self, offset: i32) -> Option<u8> {
-        self.entries
-            .iter()
-            .find(|entry| entry.offset == offset)
-            .and_then(|entry| entry.constant)
+        self.entries.get(&offset).and_then(|entry| entry.constant)
     }
 
     /// Get a register holding the value of a cell.
     fn read(&mut self, bytes: &mut Vec<u8>, offset: i32) -> u8 {
-        let index = self.entry(bytes, offset, true);
-        let entry = &mut self.entries[index];
-        if !entry.materialized {
-            mov_imm(bytes, entry.reg, entry.constant.unwrap());
-            entry.materialized = true;
+        let Some(entry) = self.entries.get(&offset).copied() else {
+            let reg = self.allocate(bytes, offset);
+            load_cell(bytes, reg, offset);
+            self.entries.insert(
+                offset,
+                Entry {
+                    reg: Some(reg),
+                    dirty: false,
+                    constant: None,
+                    materialized: true,
+                },
+            );
+            return reg;
+        };
+        if entry.materialized {
+            return entry.reg.unwrap();
         }
-        entry.reg
+
+        let reg = match entry.reg {
+            Some(reg) => reg,
+            None => self.allocate(bytes, offset),
+        };
+        mov_imm(bytes, reg, entry.constant.unwrap());
+        let entry = self.entries.get_mut(&offset).unwrap();
+        entry.reg = Some(reg);
+        entry.materialized = true;
+        reg
     }
 
     /// Get a register holding the value of a cell which is about to be modified.
     fn modify(&mut self, bytes: &mut Vec<u8>, offset: i32) -> u8 {
         let reg = self.read(bytes, offset);
-        let entry = self.entries.last_mut().unwrap();
+        let entry = self.entries.get_mut(&offset).unwrap();
         entry.dirty = true;
         entry.constant = None;
         reg
@@ -412,35 +474,49 @@ impl CellCache {
 
     /// Get a register for a cell which is about to be overwritten.
     fn overwrite(&mut self, bytes: &mut Vec<u8>, offset: i32) -> u8 {
-        let index = self.entry(bytes, offset, false);
-        let entry = &mut self.entries[index];
-        entry.dirty = true;
-        entry.constant = None;
-        entry.materialized = true;
-        entry.reg
+        let reg = match self.entries.get(&offset).and_then(|entry| entry.reg) {
+            Some(reg) => reg,
+            None => self.allocate(bytes, offset),
+        };
+        self.entries.insert(
+            offset,
+            Entry {
+                reg: Some(reg),
+                dirty: true,
+                constant: None,
+                materialized: true,
+            },
+        );
+        reg
     }
 
-    fn set(&mut self, bytes: &mut Vec<u8>, offset: i32, value: u8) {
-        let index = self.entry(bytes, offset, false);
-        let entry = &mut self.entries[index];
-        entry.dirty = true;
-        entry.constant = Some(value);
-        entry.materialized = false;
+    fn set(&mut self, offset: i32, value: u8) {
+        let reg = self.entries.get(&offset).and_then(|entry| entry.reg);
+        self.entries.insert(
+            offset,
+            Entry {
+                reg,
+                dirty: true,
+                constant: Some(value),
+                materialized: false,
+            },
+        );
     }
 
-    fn write_back(bytes: &mut Vec<u8>, entry: Entry) {
+    fn write_back(bytes: &mut Vec<u8>, offset: i32, entry: Entry) {
         if !entry.dirty {
             return;
         }
-        match entry.constant {
-            Some(value) if !entry.materialized => store_cell_imm(bytes, entry.offset, value),
-            _ => store_cell(bytes, entry.reg, entry.offset),
+        match (entry.constant, entry.reg) {
+            (Some(value), _) if !entry.materialized => store_cell_imm(bytes, offset, value),
+            (_, Some(reg)) => store_cell(bytes, reg, offset),
+            _ => unreachable!("cell {offset} has no value"),
         }
     }
 
     fn flush(self, bytes: &mut Vec<u8>) {
-        for entry in self.entries {
-            Self::write_back(bytes, entry);
+        for (offset, entry) in self.entries {
+            Self::write_back(bytes, offset, entry);
         }
     }
 
@@ -457,13 +533,13 @@ impl CellCache {
         match *node {
             AstNode::Add(offset, value) => {
                 if let Some(constant) = self.constant(offset) {
-                    self.set(bytes, offset, constant.wrapping_add(value));
+                    self.set(offset, constant.wrapping_add(value));
                 } else {
                     let reg = self.modify(bytes, offset);
                     arith_imm(bytes, ADD, reg, value);
                 }
             }
-            AstNode::Set(offset, value) => self.set(bytes, offset, value),
+            AstNode::Set(offset, value) => self.set(offset, value),
             AstNode::MulAdd { src, dst, factor } => {
                 if let Some(constant) = self.constant(src) {
                     self.node(bytes, &AstNode::Add(dst, constant.wrapping_mul(factor)));
@@ -535,40 +611,47 @@ impl CellCache {
 /// Compile a run of `Add`, `Set`, `MulAdd`, `CondAdd` and `ProductAdd` nodes.
 /// Cells are kept in registers and written back at the end.
 pub fn straight_line(bytes: &mut Vec<u8>, nodes: &[AstNode]) {
-    let mut cache = CellCache::default();
-    for node in nodes {
+    let mut cache = CellCache::new(nodes);
+    for (position, node) in nodes.iter().enumerate() {
+        cache.position = position;
         cache.node(bytes, node);
     }
     cache.flush(bytes);
+}
+
+/// The cells a straight-line node accesses.
+fn accessed_cells(node: &AstNode) -> Vec<i32> {
+    match *node {
+        AstNode::Add(offset, _) | AstNode::Set(offset, _) => vec![offset],
+        AstNode::MulAdd { src, dst, .. } => vec![src, dst],
+        AstNode::CondAdd { lhs, rhs, dst, .. } => lhs
+            .reads()
+            .into_iter()
+            .chain(rhs.reads())
+            .chain([dst])
+            .collect(),
+        AstNode::ProductAdd {
+            base,
+            step,
+            count,
+            dst,
+            ..
+        } => [base, step, count]
+            .iter()
+            .filter_map(|operand| operand.reads())
+            .chain([dst])
+            .collect(),
+        _ => unreachable!("not a straight-line node: {node:?}"),
+    }
 }
 
 /// Compile a loop whose body is straight-line code which doesn't move the
 /// data pointer, keeping all cells in registers across iterations. Returns
 /// false if there are too many cells.
 pub fn register_loop(bytes: &mut Vec<u8>, nodes: &[AstNode]) -> bool {
-    let mut cells = vec![0];
-    for node in nodes {
-        match *node {
-            AstNode::Add(offset, _) | AstNode::Set(offset, _) => cells.push(offset),
-            AstNode::MulAdd { src, dst, .. } => cells.extend([src, dst]),
-            AstNode::CondAdd { lhs, rhs, dst, .. } => {
-                cells.extend(lhs.reads().into_iter().chain(rhs.reads()).chain([dst]));
-            }
-            AstNode::ProductAdd {
-                base,
-                step,
-                count,
-                dst,
-                ..
-            } => cells.extend(
-                [base, step, count]
-                    .iter()
-                    .filter_map(|o| o.reads())
-                    .chain([dst]),
-            ),
-            _ => unreachable!("not a straight-line node: {node:?}"),
-        }
-    }
+    let mut cells: Vec<i32> = std::iter::once(0)
+        .chain(nodes.iter().flat_map(accessed_cells))
+        .collect();
     cells.sort_unstable();
     cells.dedup();
     if cells.len() > CACHE_REGS.len() {
