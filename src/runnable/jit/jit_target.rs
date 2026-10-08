@@ -110,6 +110,7 @@ impl JITTarget {
                     code_gen::straight_line(&mut bytes, &run);
                 }
                 AstNode::DivMod { .. } => code_gen::div_mod(&mut bytes, &node),
+                AstNode::Skip { exits, steps } => code_gen::skip(&mut bytes, &exits, &steps),
                 AstNode::Move(n) => code_gen::move_pointer(&mut bytes, n),
                 AstNode::Print(offset) => code_gen::print(&mut bytes, offset),
                 AstNode::Read(offset) => code_gen::read(&mut bytes, offset),

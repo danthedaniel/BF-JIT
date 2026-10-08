@@ -1258,7 +1258,7 @@ fn solve_loop(body: &[AstNode], entry: &Known, exit: &Live, live: &Live) -> Opti
 }
 
 /// Multiplicative inverse of an odd number modulo 256.
-fn inverse(value: u8) -> u8 {
+pub(super) fn inverse(value: u8) -> u8 {
     // Newton's method: each step doubles the number of correct bits.
     let mut inverse = value;
     for _ in 0..3 {

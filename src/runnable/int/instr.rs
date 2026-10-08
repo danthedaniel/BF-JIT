@@ -37,6 +37,11 @@ pub enum Instr {
         quotient: i32,
         factor: u8,
     },
+    /// Step cells by the number of steps until one reaches a target.
+    Skip {
+        exits: Vec<(i32, u8, u8)>,
+        steps: Vec<(i32, u8)>,
+    },
     /// Shift the data pointer.
     Move(i32),
     /// Display a memory cell as an ASCII character.

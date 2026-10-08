@@ -663,6 +663,41 @@ pub fn div_mod(bytes: &mut Vec<u8>, node: &AstNode) {
     bytes.extend(divide);
 }
 
+pub fn skip(bytes: &mut Vec<u8>, exits: &[(i32, u8, u8)], steps: &[(i32, u8)]) {
+    // w3 = the smallest number of steps until a cell reaches its target
+    for (i, &(cell, target, factor)) in exits.iter().enumerate() {
+        load_byte(bytes, 0, cell);
+        // movz w1, #target
+        emit_u32(bytes, 0x5280_0000 | (u32::from(target) << 5) | 1);
+        // sub w1, w1, w0
+        emit_u32(bytes, 0x4b00_0021);
+        // movz w2, #factor
+        emit_u32(bytes, 0x5280_0000 | (u32::from(factor) << 5) | 2);
+        // mul w1, w1, w2
+        emit_u32(bytes, 0x1b02_7c21);
+        // and w1, w1, #0xff
+        emit_u32(bytes, 0x1200_1c21);
+        if i == 0 {
+            // mov w3, w1
+            emit_u32(bytes, 0x2a01_03e3);
+        } else {
+            // cmp w1, w3
+            emit_u32(bytes, 0x6b03_003f);
+            // csel w3, w1, w3, lo
+            emit_u32(bytes, 0x1a83_3023);
+        }
+    }
+
+    for &(cell, step) in steps {
+        load_byte(bytes, 0, cell);
+        // movz w2, #step
+        emit_u32(bytes, 0x5280_0000 | (u32::from(step) << 5) | 2);
+        // madd w0, w3, w2, w0
+        emit_u32(bytes, 0x1b02_0060);
+        store_byte(bytes, 0, cell);
+    }
+}
+
 /// Add a value to x19.
 fn add_to_pointer(bytes: &mut Vec<u8>, amount: i32) {
     if (0..4096).contains(&amount) {

@@ -84,6 +84,7 @@ impl Interpreter {
                     quotient,
                     factor,
                 }),
+                AstNode::Skip { exits, steps } => instrs.push(Instr::Skip { exits, steps }),
                 AstNode::Move(n) => instrs.push(Instr::Move(n)),
                 AstNode::Print(offset) => instrs.push(Instr::Print(offset)),
                 AstNode::Read(offset) => instrs.push(Instr::Read(offset)),
@@ -168,6 +169,20 @@ impl Interpreter {
         Ok(())
     }
 
+    /// Execute a `Skip` instruction.
+    fn skip(&mut self, exits: &[(i32, u8, u8)], steps: &[(i32, u8)]) -> Result<()> {
+        let mut count = u8::MAX;
+        for &(cell, target, factor) in exits {
+            let value = *self.cell(cell)?;
+            count = count.min(target.wrapping_sub(value).wrapping_mul(factor));
+        }
+        for &(cell, step) in steps {
+            let cell = self.cell(cell)?;
+            *cell = cell.wrapping_add(count.wrapping_mul(step));
+        }
+        Ok(())
+    }
+
     /// Move the data pointer.
     fn shift(&mut self, amount: i32) -> Result<()> {
         self.dp = self
@@ -186,6 +201,7 @@ impl Interpreter {
     ///
     /// Returns Ok(true) to continue execution, Ok(false) when the program has terminated normally,
     /// or Err(_) on execution errors.
+    #[allow(clippy::too_many_lines)]
     pub fn step(&mut self) -> Result<bool> {
         // Terminate if the program counter is outside of the program.
         if self.pc >= self.program.len() {
@@ -249,6 +265,10 @@ impl Interpreter {
                 quotient,
                 factor,
             )?,
+            Instr::Skip {
+                ref exits,
+                ref steps,
+            } => self.skip(&exits.clone(), &steps.clone())?,
             Instr::Move(n) => self.shift(n)?,
             Instr::Print(offset) => {
                 let value = *self.cell(offset)?;

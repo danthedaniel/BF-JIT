@@ -209,6 +209,35 @@ fn divide_loop(quirk: bool) -> String {
     code.text
 }
 
+/// A loop counting down cell 0 and the byte in cell 1, setting cell 2 and
+/// stopping early if cell 1 reaches zero first. Cells 3 to 5 are
+/// temporaries.
+fn count_down_loop() -> String {
+    let (counter, value, flag, t, u, zero) = (0, 1, 2, 3, 4, 5);
+
+    let mut code = Code::default();
+    code.repeat(counter, |code| {
+        code.add(counter, -1);
+        code.clear(t);
+        code.clear(u);
+        code.move_into(value, &[(t, 1), (u, 1)]);
+        code.move_into(u, &[(value, 1)]);
+        code.clear(zero);
+        code.add(zero, 1);
+        code.repeat(t, |code| {
+            code.clear(t);
+            code.add(value, -1);
+            code.add(zero, -1);
+        });
+        code.repeat(zero, |code| {
+            code.add(zero, -1);
+            code.clear(counter);
+            code.add(flag, 1);
+        });
+    });
+    code.text
+}
+
 /// Random program biased towards loop idioms the optimizer recognizes.
 fn generate(rng: &mut Rng, depth: usize, out: &mut String) {
     for _ in 0..=rng.below(8) {
@@ -447,6 +476,40 @@ fn divide_loop_edge_cases() {
         }
     }
     assert!(checked > 100, "{checked}");
+}
+
+#[test]
+fn accelerated_loops_in_random_programs() {
+    let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
+    let loops = [divide_loop(false), count_down_loop()];
+    let mut checked = 0;
+
+    for _ in 0..1000 {
+        let mut program = ">".repeat(START);
+        generate(&mut rng, 1, &mut program);
+        program.push_str(&loops[rng.below(loops.len())]);
+        generate(&mut rng, 1, &mut program);
+        if check(&program, INPUT, 2_000_000) {
+            checked += 1;
+        }
+    }
+    assert!(checked > 300, "{checked}");
+}
+
+#[test]
+fn count_down_loop_edge_cases() {
+    let program = format!("{},>,>,<<{}>.>.<<.", ">".repeat(START), count_down_loop());
+    let ast = AstNode::parse(&program, false).unwrap();
+    assert!(format!("{ast:?}").contains("Skip"), "{ast:?}");
+
+    let values = [0, 1, 2, 3, 100, 127, 128, 129, 254, 255];
+    for counter in values {
+        for value in values {
+            for flag in [0, 7] {
+                assert!(check(&program, &[counter, value, flag], 1_000_000));
+            }
+        }
+    }
 }
 
 #[test]

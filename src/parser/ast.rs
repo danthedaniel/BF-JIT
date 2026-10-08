@@ -42,6 +42,13 @@ pub enum AstNode {
         quotient: i32,
         factor: u8,
     },
+    /// Add `n` times `step` to the cell at each offset in `steps`. For each
+    /// `(cell, target, factor)` in `exits`, `(target - cell) * factor` is a
+    /// number of steps (wrapping), and `n` is the smallest of them.
+    Skip {
+        exits: Vec<(i32, u8, u8)>,
+        steps: Vec<(i32, u8)>,
+    },
     /// Shift the data pointer.
     Move(i32),
     /// Display a memory cell as an ASCII character.
@@ -225,6 +232,13 @@ pub fn max_offset(nodes: &[AstNode]) -> u32 {
             .map(i32::unsigned_abs)
             .max()
             .unwrap(),
+            AstNode::Skip { exits, steps } => exits
+                .iter()
+                .map(|&(cell, ..)| cell)
+                .chain(steps.iter().map(|&(cell, _)| cell))
+                .map(i32::unsigned_abs)
+                .max()
+                .unwrap_or(0),
             AstNode::Loop(body) => max_offset(body),
             AstNode::Move(_) | AstNode::Scan(_) | AstNode::Syscall => 0,
         })

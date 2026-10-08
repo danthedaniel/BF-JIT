@@ -340,6 +340,41 @@ pub fn div_mod(bytes: &mut Vec<u8>, node: &AstNode) {
     bytes.extend(divide);
 }
 
+pub fn skip(bytes: &mut Vec<u8>, exits: &[(i32, u8, u8)], steps: &[(i32, u8)]) {
+    // edx = the smallest number of steps until a cell reaches its target
+    for (i, &(cell, target, factor)) in exits.iter().enumerate() {
+        // mov eax, target
+        bytes.push(0xb8);
+        bytes.extend_from_slice(&u32::from(target).to_le_bytes());
+        load_cell(bytes, 1, cell);
+        // sub eax, ecx
+        bytes.extend_from_slice(&[0x29, 0xc8]);
+        // imul eax, eax, factor
+        bytes.extend_from_slice(&[0x69, 0xc0]);
+        bytes.extend_from_slice(&u32::from(factor).to_le_bytes());
+        // movzx eax, al
+        bytes.extend_from_slice(&[0x0f, 0xb6, 0xc0]);
+        if i == 0 {
+            // mov edx, eax
+            bytes.extend_from_slice(&[0x89, 0xc2]);
+        } else {
+            // cmp eax, edx
+            bytes.extend_from_slice(&[0x39, 0xd0]);
+            // cmovb edx, eax
+            bytes.extend_from_slice(&[0x0f, 0x42, 0xd0]);
+        }
+    }
+
+    for &(cell, step) in steps {
+        // imul eax, edx, step
+        bytes.extend_from_slice(&[0x69, 0xc2]);
+        bytes.extend_from_slice(&u32::from(step).to_le_bytes());
+        // add byte [r10 + cell], al
+        bytes.extend_from_slice(&[0x41, 0x00]);
+        cell_operand(bytes, 0, cell);
+    }
+}
+
 pub fn move_pointer(bytes: &mut Vec<u8>, amount: i32) {
     // add r10, amount
     bytes.extend_from_slice(&[0x49, 0x81, 0xc2]);
