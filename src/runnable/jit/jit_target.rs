@@ -12,8 +12,10 @@ use crate::runnable::jit::executable_memory::VTable;
 use crate::runnable::syscall::{execute_syscall, parse_syscall_args};
 use crate::runnable::{BF_MEMORY_SIZE, Runnable};
 
-/// Set arbitrarily
-const INLINE_THRESHOLD: usize = 0x16;
+/// Loops with fewer nodes than this (not counting nested loops' bodies) are
+/// compiled inline rather than deferred. Calling a deferred loop costs
+/// saving and restoring registers, which adds up for short hot loops.
+const INLINE_THRESHOLD: usize = 0x100;
 
 pub struct JITContext {
     /// All non-root `JITTargets` in the program
