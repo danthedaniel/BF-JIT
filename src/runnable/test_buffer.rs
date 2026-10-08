@@ -20,6 +20,10 @@ impl TestBuffer {
         }
     }
 
+    pub fn get_content(&self) -> Vec<u8> {
+        self.inner.borrow().clone()
+    }
+
     pub fn get_string_content(&self) -> String {
         let data = self.inner.borrow().clone();
         String::from_utf8(data).expect("Data was invalid utf-8")

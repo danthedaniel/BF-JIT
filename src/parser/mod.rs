@@ -1,3 +1,4 @@
 mod ast;
+mod optimizer;
 
-pub use self::ast::AstNode;
+pub use self::ast::{AstNode, Operand, max_offset};

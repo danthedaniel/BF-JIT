@@ -1,3 +1,4 @@
+use crate::parser::{AstNode, Operand};
 use crate::runnable::jit::executable_memory::VTableEntry;
 use crate::runnable::jit::jit_promise::JITPromiseID;
 
@@ -8,8 +9,7 @@ const PTR_SIZE: u8 = 8;
 // r10 - BrainFuck memory pointer (current cell)
 // r11 - JITTarget pointer
 // r12 - VTable pointer
-// r13 - First temporary register
-// r14 - Second temporary register
+// eax, ecx - Temporary registers
 // r15 - BrainFuck memory base pointer (for syscalls)
 
 fn callee_save_to_stack(bytes: &mut Vec<u8>) {
@@ -160,48 +160,127 @@ fn callee_restore_from_stack(bytes: &mut Vec<u8>) {
     bytes.push(0x5b);
 }
 
-pub fn decr(bytes: &mut Vec<u8>, n: u8) {
-    // sub    BYTE PTR [r10],n
-    bytes.push(0x41);
-    bytes.push(0x80);
-    bytes.push(0x2a);
-    bytes.push(n);
+/// Emit `[r10 + offset]` for an instruction whose `ModRM` reg field is `reg`.
+/// The instruction's REX prefix must include REX.B.
+fn cell_operand(bytes: &mut Vec<u8>, reg: u8, offset: i32) {
+    // ModRM: mod=10 (disp32), reg, rm=010 (r10 with REX.B)
+    bytes.push(0x82 | (reg << 3));
+    bytes.extend_from_slice(&offset.to_le_bytes());
 }
 
-pub fn incr(bytes: &mut Vec<u8>, n: u8) {
-    // add    BYTE PTR [r10],n
-    bytes.push(0x41);
-    bytes.push(0x80);
-    bytes.push(0x02);
-    bytes.push(n);
+/// movzx e<reg>, byte [r10 + offset]  (reg is eax=0, ecx=1 or edx=2)
+fn load_cell(bytes: &mut Vec<u8>, reg: u8, offset: i32) {
+    bytes.extend_from_slice(&[0x41, 0x0f, 0xb6]);
+    cell_operand(bytes, reg, offset);
 }
 
-pub fn next(bytes: &mut Vec<u8>, n: u16) {
-    let n_u32 = u32::from(n);
-    let n_bytes = n_u32.to_ne_bytes();
+/// Load an operand's value into e<reg> (eax=0, ecx=1 or edx=2), zero-extended from a byte.
+fn load_operand(bytes: &mut Vec<u8>, reg: u8, operand: Operand) {
+    if operand.scale == 0 {
+        // mov e<reg>, imm32
+        bytes.push(0xb8 + reg);
+        bytes.extend_from_slice(&u32::from(operand.bias).to_le_bytes());
+        return;
+    }
 
-    // add    r10,n
-    bytes.push(0x49);
-    bytes.push(0x81);
-    bytes.push(0xc2);
-    bytes.push(n_bytes[0]);
-    bytes.push(n_bytes[1]);
-    bytes.push(n_bytes[2]);
-    bytes.push(n_bytes[3]);
+    load_cell(bytes, reg, operand.cell);
+    if operand.scale != 1 {
+        // imul e<reg>, e<reg>, imm8
+        bytes.extend_from_slice(&[0x6b, 0xc0 | (reg << 3) | reg, operand.scale]);
+    }
+    if operand.bias != 0 {
+        // add e<reg>, imm8
+        bytes.extend_from_slice(&[0x83, 0xc0 | reg, operand.bias]);
+    }
+    // movzx e<reg>, <reg>l
+    bytes.extend_from_slice(&[0x0f, 0xb6, 0xc0 | (reg << 3) | reg]);
 }
 
-pub fn prev(bytes: &mut Vec<u8>, n: u16) {
-    let n_u32 = u32::from(n);
-    let n_bytes = n_u32.to_ne_bytes();
+/// Compile a run of `Add`, `Set`, `MulAdd` and `CondAdd` nodes.
+pub fn straight_line(bytes: &mut Vec<u8>, nodes: &[AstNode]) {
+    for node in nodes {
+        match *node {
+            AstNode::Add(offset, value) => {
+                // add byte [r10 + offset], value
+                bytes.extend_from_slice(&[0x41, 0x80]);
+                cell_operand(bytes, 0, offset);
+                bytes.push(value);
+            }
+            AstNode::Set(offset, value) => {
+                // mov byte [r10 + offset], value
+                bytes.extend_from_slice(&[0x41, 0xc6]);
+                cell_operand(bytes, 0, offset);
+                bytes.push(value);
+            }
+            AstNode::MulAdd { src, dst, factor } => {
+                load_cell(bytes, 0, src);
+                let opcode = if factor == u8::MAX {
+                    // sub byte [r10 + dst], al
+                    0x28
+                } else {
+                    if factor != 1 {
+                        // imul eax, eax, factor
+                        bytes.extend_from_slice(&[0x6b, 0xc0, factor]);
+                    }
+                    // add byte [r10 + dst], al
+                    0x00
+                };
+                bytes.extend_from_slice(&[0x41, opcode]);
+                cell_operand(bytes, 0, dst);
+            }
+            AstNode::CondAdd {
+                lhs,
+                rhs,
+                dst,
+                value,
+            } => {
+                load_operand(bytes, 0, lhs);
+                load_operand(bytes, 1, rhs);
+                // cmp eax, ecx
+                bytes.extend_from_slice(&[0x39, 0xc8]);
+                // jae over the add
+                bytes.extend_from_slice(&[0x73, 8]);
+                // add byte [r10 + dst], value
+                bytes.extend_from_slice(&[0x41, 0x80]);
+                cell_operand(bytes, 0, dst);
+                bytes.push(value);
+            }
+            AstNode::ProductAdd {
+                base,
+                step,
+                count,
+                high,
+                dst,
+                value,
+            } => {
+                load_operand(bytes, 0, base);
+                load_operand(bytes, 1, step);
+                load_operand(bytes, 2, count);
+                // imul ecx, edx
+                bytes.extend_from_slice(&[0x0f, 0xaf, 0xca]);
+                // add eax, ecx
+                bytes.extend_from_slice(&[0x01, 0xc8]);
+                if high {
+                    // shr eax, 8
+                    bytes.extend_from_slice(&[0xc1, 0xe8, 0x08]);
+                }
+                if value != 1 {
+                    // imul eax, eax, value
+                    bytes.extend_from_slice(&[0x6b, 0xc0, value]);
+                }
+                // add byte [r10 + dst], al
+                bytes.extend_from_slice(&[0x41, 0x00]);
+                cell_operand(bytes, 0, dst);
+            }
+            _ => unreachable!("not a straight-line node: {node:?}"),
+        }
+    }
+}
 
-    // sub    r10,n
-    bytes.push(0x49);
-    bytes.push(0x81);
-    bytes.push(0xea);
-    bytes.push(n_bytes[0]);
-    bytes.push(n_bytes[1]);
-    bytes.push(n_bytes[2]);
-    bytes.push(n_bytes[3]);
+pub fn move_pointer(bytes: &mut Vec<u8>, amount: i32) {
+    // add r10, amount
+    bytes.extend_from_slice(&[0x49, 0x81, 0xc2]);
+    bytes.extend_from_slice(&amount.to_le_bytes());
 }
 
 fn fn_call_pre(bytes: &mut Vec<u8>) {
@@ -219,9 +298,18 @@ fn fn_call_pre(bytes: &mut Vec<u8>) {
     // push   r12
     bytes.push(0x41);
     bytes.push(0x54);
+
+    // Keep the stack 16 byte aligned for the call
+    // push   r13
+    bytes.push(0x41);
+    bytes.push(0x55);
 }
 
 fn fn_call_post(bytes: &mut Vec<u8>) {
+    // pop    r13
+    bytes.push(0x41);
+    bytes.push(0x5d);
+
     // Pop vtable pointer from the stack
     // pop    r12
     bytes.push(0x41);
@@ -249,7 +337,7 @@ fn call_vtable_entry(bytes: &mut Vec<u8>, entry: VTableEntry) {
     bytes.push((entry as u8) * PTR_SIZE);
 }
 
-pub fn print(bytes: &mut Vec<u8>) {
+pub fn print(bytes: &mut Vec<u8>, offset: i32) {
     fn_call_pre(bytes);
 
     // Move the JITTarget pointer into the first argument register
@@ -258,19 +346,17 @@ pub fn print(bytes: &mut Vec<u8>) {
     bytes.push(0x89);
     bytes.push(0xdf);
 
-    // Move the current memory cell into the second argument register
-    // movzx    rsi,BYTE PTR [r10]
-    bytes.push(0x49);
-    bytes.push(0x0f);
-    bytes.push(0xb6);
-    bytes.push(0x32);
+    // Move the memory cell into the second argument register
+    // movzx  esi, byte [r10 + offset]
+    bytes.extend_from_slice(&[0x41, 0x0f, 0xb6]);
+    cell_operand(bytes, 6, offset);
 
     call_vtable_entry(bytes, VTableEntry::Print);
 
     fn_call_post(bytes);
 }
 
-pub fn read(bytes: &mut Vec<u8>) {
+pub fn read(bytes: &mut Vec<u8>, offset: i32) {
     fn_call_pre(bytes);
 
     // Move the JITTarget pointer into the first argument register
@@ -283,23 +369,31 @@ pub fn read(bytes: &mut Vec<u8>) {
 
     fn_call_post(bytes);
 
-    // Copy return value into current cell.
-    // mov    BYTE PTR [r10],al
-    bytes.push(0x41);
-    bytes.push(0x88);
-    bytes.push(0x02);
+    // Copy return value into the memory cell.
+    // mov    byte [r10 + offset], al
+    bytes.extend_from_slice(&[0x41, 0x88]);
+    cell_operand(bytes, 0, offset);
 }
 
-pub fn set(bytes: &mut Vec<u8>, value: u8) {
-    // Set current memory cell to the value
-    // mov    BYTE PTR [r10],value
-    bytes.push(0x41);
-    bytes.push(0xc6);
-    bytes.push(0x02);
-    bytes.push(value);
+pub fn scan(bytes: &mut Vec<u8>, stride: i32) {
+    // loop:
+    // cmp    byte [r10], 0
+    bytes.extend_from_slice(&[0x41, 0x80, 0x3a, 0x00]);
+    // je     done (over the add and jmp)
+    bytes.extend_from_slice(&[0x74, 9]);
+    move_pointer(bytes, stride);
+    // jmp    loop
+    bytes.extend_from_slice(&[0xeb, 0xf1]);
+    // done:
 }
 
-pub fn aot_loop(bytes: &mut Vec<u8>, inner_loop_bytes: Vec<u8>) {
+/// Emit a loop. `trailing_move` is a pointer movement at the end of the body.
+pub fn aot_loop(bytes: &mut Vec<u8>, inner_loop_bytes: Vec<u8>, trailing_move: i32) {
+    let mut inner_loop_bytes = inner_loop_bytes;
+    if trailing_move != 0 {
+        move_pointer(&mut inner_loop_bytes, trailing_move);
+    }
+
     let inner_loop_size = i32::try_from(inner_loop_bytes.len()).unwrap();
 
     let end_loop_size: i32 = 10; // Bytes
@@ -307,44 +401,60 @@ pub fn aot_loop(bytes: &mut Vec<u8>, inner_loop_bytes: Vec<u8>) {
 
     // Check if the current memory cell equals zero.
     // cmp    BYTE PTR [r10],0x0
-    bytes.push(0x41);
-    bytes.push(0x80);
-    bytes.push(0x3a);
-    bytes.push(0x00);
-
-    let offset_bytes = byte_offset.to_ne_bytes();
+    bytes.extend_from_slice(&[0x41, 0x80, 0x3a, 0x00]);
 
     // Jump to the end of the loop if equal.
     // je    offset
-    bytes.push(0x0f);
-    bytes.push(0x84);
-    bytes.push(offset_bytes[0]);
-    bytes.push(offset_bytes[1]);
-    bytes.push(offset_bytes[2]);
-    bytes.push(offset_bytes[3]);
+    bytes.extend_from_slice(&[0x0f, 0x84]);
+    bytes.extend_from_slice(&byte_offset.to_le_bytes());
 
     bytes.extend(inner_loop_bytes);
 
     // Check if the current memory cell equals zero.
     // cmp    BYTE PTR [r10],0x0
-    bytes.push(0x41);
-    bytes.push(0x80);
-    bytes.push(0x3a);
-    bytes.push(0x00);
-
-    let offset_bytes = (-byte_offset).to_ne_bytes();
+    bytes.extend_from_slice(&[0x41, 0x80, 0x3a, 0x00]);
 
     // Jump back to the beginning of the loop if not equal.
     // jne    offset
-    bytes.push(0x0f);
-    bytes.push(0x85);
-    bytes.push(offset_bytes[0]);
-    bytes.push(offset_bytes[1]);
-    bytes.push(offset_bytes[2]);
-    bytes.push(offset_bytes[3]);
+    bytes.extend_from_slice(&[0x0f, 0x85]);
+    bytes.extend_from_slice(&(-byte_offset).to_le_bytes());
 }
 
 pub fn jit_loop(bytes: &mut Vec<u8>, loop_id: JITPromiseID) {
+    // Call the compiled fragment directly if there is one.
+    // mov    rax, [r12 + fragments]
+    bytes.extend_from_slice(&[
+        0x49,
+        0x8b,
+        0x44,
+        0x24,
+        (VTableEntry::Fragments as u8) * PTR_SIZE,
+    ]);
+    // mov    rax, [rax + loop_id * 8]
+    bytes.extend_from_slice(&[0x48, 0x8b, 0x80]);
+    bytes.extend_from_slice(&(u32::from(loop_id.value()) * 8).to_le_bytes());
+    // test   rax, rax
+    bytes.extend_from_slice(&[0x48, 0x85, 0xc0]);
+    // jz     callback (over the direct call below)
+    bytes.extend_from_slice(&[0x74, 24]);
+    // push   r11
+    // push   r12
+    bytes.extend_from_slice(&[0x41, 0x53, 0x41, 0x54]);
+    // mov    rdi, r10
+    // mov    rsi, r11
+    // mov    rdx, r12
+    bytes.extend_from_slice(&[0x4c, 0x89, 0xd7, 0x4c, 0x89, 0xde, 0x4c, 0x89, 0xe2]);
+    // call   rax
+    bytes.extend_from_slice(&[0xff, 0xd0]);
+    // pop    r12
+    // pop    r11
+    bytes.extend_from_slice(&[0x41, 0x5c, 0x41, 0x5b]);
+    // mov    r10, rax
+    bytes.extend_from_slice(&[0x49, 0x89, 0xc2]);
+    // jmp    done (over the callback below)
+    bytes.extend_from_slice(&[0xeb, 27]);
+
+    // callback:
     // Push JITTarget pointer onto stack
     // push   r11
     bytes.push(0x41);
@@ -361,14 +471,10 @@ pub fn jit_loop(bytes: &mut Vec<u8>, loop_id: JITPromiseID) {
     bytes.push(0x89);
     bytes.push(0xdf);
 
-    let loop_id_bytes = loop_id.value().to_ne_bytes();
-
-    // Move target index into the second argument (16-bit value zero-extended to 64-bit)
-    // mov    si,loop_id_u16
-    bytes.push(0x66);
+    // Move target index into the second argument (zero-extended to 64 bits)
+    // mov    esi, loop_id
     bytes.push(0xbe);
-    bytes.push(loop_id_bytes[0]);
-    bytes.push(loop_id_bytes[1]);
+    bytes.extend_from_slice(&u32::from(loop_id.value()).to_le_bytes());
 
     // Move data pointer into the third argument
     // mov rdx,r10
@@ -393,136 +499,6 @@ pub fn jit_loop(bytes: &mut Vec<u8>, loop_id: JITPromiseID) {
     // pop    r11
     bytes.push(0x41);
     bytes.push(0x5b);
-}
-
-pub fn multiply_add(bytes: &mut Vec<u8>, offset: i16, factor: u8) {
-    // Copy the current cell into EAX.
-    // movzx  eax,BYTE PTR [r10]
-    bytes.push(0x41);
-    bytes.push(0x0f);
-    bytes.push(0xb6);
-    bytes.push(0x02);
-
-    // Multiply by factor
-    // imul   eax,eax,factor
-    bytes.push(0x69);
-    bytes.push(0xc0);
-    bytes.push(factor);
-    bytes.push(0x00);
-    bytes.push(0x00);
-    bytes.push(0x00);
-
-    // Set r13 to the offset (sign-extended from 16 to 64 bits).
-    let offset_i64 = i64::from(offset);
-    let offset_bytes = offset_i64.to_ne_bytes();
-
-    // movabs r13,offset
-    bytes.push(0x49);
-    bytes.push(0xbd);
-    bytes.push(offset_bytes[0]);
-    bytes.push(offset_bytes[1]);
-    bytes.push(offset_bytes[2]);
-    bytes.push(offset_bytes[3]);
-    bytes.push(offset_bytes[4]);
-    bytes.push(offset_bytes[5]);
-    bytes.push(offset_bytes[6]);
-    bytes.push(offset_bytes[7]);
-
-    // Add the result to the cell at the offset.
-    // add    BYTE PTR [r10+r13],al
-    bytes.push(0x43);
-    bytes.push(0x00);
-    bytes.push(0x04);
-    bytes.push(0x2a);
-
-    // Set the current memory cell to 0.
-    // mov    BYTE PTR [r10],0
-    bytes.push(0x41);
-    bytes.push(0xc6);
-    bytes.push(0x02);
-    bytes.push(0x00);
-}
-
-pub fn add_to(bytes: &mut Vec<u8>, offsets: Vec<i16>) {
-    // Copy the current cell into EAX.
-    // movzx  eax,BYTE PTR [r10]
-    bytes.push(0x41);
-    bytes.push(0x0f);
-    bytes.push(0xb6);
-    bytes.push(0x02);
-
-    for offset in offsets {
-        // Set r13 to the offset (sign-extended from 16 to 64 bits).
-        let offset_i64 = i64::from(offset);
-        let offset_bytes = offset_i64.to_ne_bytes();
-
-        // movabs r13,offset
-        bytes.push(0x49);
-        bytes.push(0xbd);
-        bytes.push(offset_bytes[0]);
-        bytes.push(offset_bytes[1]);
-        bytes.push(offset_bytes[2]);
-        bytes.push(offset_bytes[3]);
-        bytes.push(offset_bytes[4]);
-        bytes.push(offset_bytes[5]);
-        bytes.push(offset_bytes[6]);
-        bytes.push(offset_bytes[7]);
-
-        // Add the current cell value to the cell at the offset.
-        // add    BYTE PTR [r10+r13],al
-        bytes.push(0x43);
-        bytes.push(0x00);
-        bytes.push(0x04);
-        bytes.push(0x2a);
-    }
-
-    // Set the current memory cell to 0.
-    // mov    BYTE PTR [r10],0
-    bytes.push(0x41);
-    bytes.push(0xc6);
-    bytes.push(0x02);
-    bytes.push(0x00);
-}
-
-pub fn sub_from(bytes: &mut Vec<u8>, offsets: Vec<i16>) {
-    // Copy the current cell into EAX.
-    // movzx  eax,BYTE PTR [r10]
-    bytes.push(0x41);
-    bytes.push(0x0f);
-    bytes.push(0xb6);
-    bytes.push(0x02);
-
-    for offset in offsets {
-        // Set r13 to the offset (sign-extended from 16 to 64 bits).
-        let offset_i64 = i64::from(offset);
-        let offset_bytes = offset_i64.to_ne_bytes();
-
-        // movabs r13,offset
-        bytes.push(0x49);
-        bytes.push(0xbd);
-        bytes.push(offset_bytes[0]);
-        bytes.push(offset_bytes[1]);
-        bytes.push(offset_bytes[2]);
-        bytes.push(offset_bytes[3]);
-        bytes.push(offset_bytes[4]);
-        bytes.push(offset_bytes[5]);
-        bytes.push(offset_bytes[6]);
-        bytes.push(offset_bytes[7]);
-
-        // Add the current cell value to the cell at the offset.
-        // sub    BYTE PTR [r10+r13],al
-        bytes.push(0x43);
-        bytes.push(0x28);
-        bytes.push(0x04);
-        bytes.push(0x2a);
-    }
-
-    // Set the current memory cell to 0.
-    // mov    BYTE PTR [r10],0
-    bytes.push(0x41);
-    bytes.push(0xc6);
-    bytes.push(0x02);
-    bytes.push(0x00);
 }
 
 pub fn syscall(bytes: &mut Vec<u8>) {

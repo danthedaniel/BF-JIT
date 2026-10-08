@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use std::cell::RefCell;
-use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::rc::Rc;
 use std::{fmt, slice};
@@ -8,7 +7,7 @@ use std::{fmt, slice};
 use super::code_gen;
 use super::executable_memory::{ExecutableMemory, VoidPtr};
 use super::jit_promise::{JITPromise, JITPromiseID, PromiseSet};
-use crate::parser::AstNode;
+use crate::parser::{AstNode, max_offset};
 use crate::runnable::jit::executable_memory::VTable;
 use crate::runnable::syscall::{execute_syscall, parse_syscall_args};
 use crate::runnable::{BF_MEMORY_SIZE, Runnable};
@@ -19,6 +18,9 @@ const INLINE_THRESHOLD: usize = 0x16;
 pub struct JITContext {
     /// All non-root `JITTargets` in the program
     promises: PromiseSet,
+    /// Entry points of compiled promises, or null. Compiled code calls these
+    /// directly. Allocated once with room for every promise ID so it never moves.
+    fragments: Box<[VoidPtr]>,
     /// Reader that can be overridden to allow for input from a source other than stdin
     pub io_read: Box<dyn Read>,
     /// Writer that can be overriden to allow for output to a location other than stdout
@@ -29,6 +31,7 @@ impl Default for JITContext {
     fn default() -> Self {
         Self {
             promises: PromiseSet::default(),
+            fragments: vec![std::ptr::null(); 1 << 16].into_boxed_slice(),
             io_read: Box::new(io::stdin()),
             io_write: Box::new(io::stdout()),
         }
@@ -38,11 +41,11 @@ impl Default for JITContext {
 /// Container for executable bytes.
 pub struct JITTarget {
     /// Original AST
-    pub source: VecDeque<AstNode>,
+    pub source: Vec<AstNode>,
     /// Executable bytes buffer
     executable: ExecutableMemory,
     /// Globals for the whole program
-    context: Rc<RefCell<JITContext>>,
+    pub(crate) context: Rc<RefCell<JITContext>>,
 }
 
 impl fmt::Debug for JITTarget {
@@ -57,7 +60,7 @@ impl fmt::Debug for JITTarget {
 
 impl JITTarget {
     /// Initialize a JIT compiled version of a program.
-    pub fn new(ast: VecDeque<AstNode>) -> Result<Self> {
+    pub fn new(ast: Vec<AstNode>) -> Result<Self> {
         let mut bytes = Vec::new();
         let context = Rc::new(RefCell::new(JITContext::default()));
 
@@ -73,7 +76,7 @@ impl JITTarget {
         })
     }
 
-    fn new_fragment(context: Rc<RefCell<JITContext>>, nodes: VecDeque<AstNode>) -> Result<Self> {
+    fn new_fragment(context: Rc<RefCell<JITContext>>, nodes: Vec<AstNode>) -> Result<Self> {
         let mut bytes = Vec::new();
 
         code_gen::wrapper_fragment(&mut bytes, Self::compile_loop(nodes.clone(), &context));
@@ -89,23 +92,27 @@ impl JITTarget {
     }
 
     /// Compile a vector of `AstNodes` into executable bytes.
-    fn shallow_compile(nodes: VecDeque<AstNode>, context: &Rc<RefCell<JITContext>>) -> Vec<u8> {
+    fn shallow_compile(nodes: Vec<AstNode>, context: &Rc<RefCell<JITContext>>) -> Vec<u8> {
         let mut bytes = Vec::new();
+        let mut nodes = nodes.into_iter().peekable();
 
-        for node in nodes {
+        while let Some(node) = nodes.next() {
             match node {
-                AstNode::Incr(n) => code_gen::incr(&mut bytes, n),
-                AstNode::Decr(n) => code_gen::decr(&mut bytes, n),
-                AstNode::Next(n) => code_gen::next(&mut bytes, n),
-                AstNode::Prev(n) => code_gen::prev(&mut bytes, n),
-                AstNode::Print => code_gen::print(&mut bytes),
-                AstNode::Read => code_gen::read(&mut bytes),
-                AstNode::Set(n) => code_gen::set(&mut bytes, n),
-                AstNode::MultiplyAddTo(offset, factor) => {
-                    code_gen::multiply_add(&mut bytes, offset, factor);
+                AstNode::Add(..)
+                | AstNode::Set(..)
+                | AstNode::MulAdd { .. }
+                | AstNode::CondAdd { .. }
+                | AstNode::ProductAdd { .. } => {
+                    let mut run = vec![node];
+                    while let Some(next) = nodes.next_if(Self::is_straight_line) {
+                        run.push(next);
+                    }
+                    code_gen::straight_line(&mut bytes, &run);
                 }
-                AstNode::AddTo(offsets) => code_gen::add_to(&mut bytes, offsets),
-                AstNode::SubFrom(offsets) => code_gen::sub_from(&mut bytes, offsets),
+                AstNode::Move(n) => code_gen::move_pointer(&mut bytes, n),
+                AstNode::Print(offset) => code_gen::print(&mut bytes, offset),
+                AstNode::Read(offset) => code_gen::read(&mut bytes, offset),
+                AstNode::Scan(stride) => code_gen::scan(&mut bytes, stride),
                 AstNode::Loop(nodes) if nodes.len() < INLINE_THRESHOLD => {
                     bytes.extend(Self::compile_loop(nodes, context));
                 }
@@ -117,17 +124,46 @@ impl JITTarget {
         bytes
     }
 
+    const fn is_straight_line(node: &AstNode) -> bool {
+        matches!(
+            node,
+            AstNode::Add(..)
+                | AstNode::Set(..)
+                | AstNode::MulAdd { .. }
+                | AstNode::CondAdd { .. }
+                | AstNode::ProductAdd { .. }
+        )
+    }
+
     /// Perform AOT compilation on a loop.
-    fn compile_loop(nodes: VecDeque<AstNode>, context: &Rc<RefCell<JITContext>>) -> Vec<u8> {
+    fn compile_loop(mut nodes: Vec<AstNode>, context: &Rc<RefCell<JITContext>>) -> Vec<u8> {
         let mut bytes = Vec::new();
 
-        code_gen::aot_loop(&mut bytes, Self::shallow_compile(nodes, context));
+        #[cfg(target_arch = "aarch64")]
+        if nodes.iter().all(Self::is_straight_line) && code_gen::register_loop(&mut bytes, &nodes) {
+            return bytes;
+        }
+
+        // Fold the pointer movement at the end of the body into the loop condition.
+        let trailing_move = match nodes.last() {
+            Some(&AstNode::Move(n)) => {
+                nodes.pop();
+                n
+            }
+            _ => 0,
+        };
+
+        code_gen::aot_loop(
+            &mut bytes,
+            Self::shallow_compile(nodes, context),
+            trailing_move,
+        );
 
         bytes
     }
 
     /// Perform JIT compilation on a loop.
-    fn defer_loop(nodes: VecDeque<AstNode>, context: &Rc<RefCell<JITContext>>) -> Vec<u8> {
+    fn defer_loop(nodes: Vec<AstNode>, context: &Rc<RefCell<JITContext>>) -> Vec<u8> {
         let mut bytes = Vec::new();
 
         code_gen::jit_loop(&mut bytes, context.borrow_mut().promises.add(nodes));
@@ -150,6 +186,8 @@ impl JITTarget {
             JITPromise::Deferred(nodes) => {
                 let mut new_target = Self::new_fragment(self.context.clone(), nodes)
                     .expect("Failed to create JIT fragment during callback");
+                self.context.borrow_mut().fragments[promise_index] =
+                    new_target.executable.as_fn() as VoidPtr;
                 return_ptr = new_target.exec(mem_ptr);
                 new_promise = Some(JITPromise::Compiled(new_target));
             }
@@ -208,7 +246,8 @@ impl JITTarget {
             slice::from_raw_parts(mem_ptr, BF_MEMORY_SIZE - cell)
         };
 
-        let syscall_args = parse_syscall_args(memory, bf_mem_base).expect("Invalid syscall argument type");
+        let syscall_args =
+            parse_syscall_args(memory, bf_mem_base).expect("Invalid syscall argument type");
 
         #[allow(clippy::cast_possible_truncation)]
         {
@@ -217,12 +256,13 @@ impl JITTarget {
     }
 
     /// Execute the bytes buffer as a function.
-    fn exec(&mut self, mem_ptr: *mut u8) -> *mut u8 {
-        let vtable: VTable<4> = [
+    pub(crate) fn exec(&mut self, mem_ptr: *mut u8) -> *mut u8 {
+        let vtable: VTable<5> = [
             Self::jit_callback as VoidPtr,
             Self::read as VoidPtr,
             Self::print as VoidPtr,
             Self::syscall as VoidPtr,
+            self.context.borrow().fragments.as_ptr().cast(),
         ];
 
         self.executable.as_fn()(mem_ptr, self, &vtable)
@@ -231,8 +271,10 @@ impl JITTarget {
 
 impl Runnable for JITTarget {
     fn run(&mut self) -> Result<()> {
-        let mut bf_mem = vec![0u8; BF_MEMORY_SIZE]; // Memory space used by BrainFuck
-        self.exec(bf_mem.as_mut_ptr());
+        let padding = max_offset(&self.source) as usize;
+        // Memory space used by BrainFuck
+        let mut bf_mem = vec![0u8; padding + BF_MEMORY_SIZE + padding];
+        self.exec(bf_mem[padding..].as_mut_ptr());
         Ok(())
     }
 }
@@ -301,26 +343,23 @@ mod tests {
 
     #[test]
     fn test_multiply_add_to() {
-        use crate::parser::AstNode;
-        use std::collections::VecDeque;
-
-        // Create a simple program that tests MultiplyAddTo
         // Set cell 0 to 5, then multiply by 3 and add to cell 2
-        let mut nodes = VecDeque::new();
-        nodes.push_back(AstNode::Set(5)); // Set current cell to 5
-        nodes.push_back(AstNode::MultiplyAddTo(2, 3)); // Multiply by 3, add to cell at offset +2
+        let nodes = vec![
+            AstNode::Set(0, 5),
+            AstNode::MulAdd {
+                src: 0,
+                dst: 2,
+                factor: 3,
+            },
+        ];
 
         let mut jit_target = JITTarget::new(nodes).unwrap();
-        let shared_buffer = TestBuffer::new();
-        jit_target.context.borrow_mut().io_write = Box::new(shared_buffer.clone());
 
         // Create a custom memory to inspect results
         let mut bf_mem = vec![0u8; BF_MEMORY_SIZE];
         jit_target.exec(bf_mem.as_mut_ptr());
 
-        // Cell 0 should be 0 (cleared after operation)
-        assert_eq!(bf_mem[0], 0);
-        // Cell 2 should be 15 (5 * 3)
+        assert_eq!(bf_mem[0], 5);
         assert_eq!(bf_mem[2], 15);
     }
 }

@@ -1,29 +1,28 @@
 use anyhow::{Context, Result, bail};
 use std::cmp;
-use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 
 use super::instr::Instr;
-use crate::parser::AstNode;
+use crate::parser::{AstNode, Operand};
 use crate::runnable::syscall::{execute_syscall, parse_syscall_args};
 use crate::runnable::{BF_MEMORY_SIZE, Runnable};
 
 /// brainfuck virtual machine
 pub struct Interpreter {
     program: Vec<Instr>,
-    memory: Vec<u8>,
+    pub(crate) memory: Vec<u8>,
     /// Program counter
     pc: usize,
     /// Data pointer
     dp: usize,
     /// Reader used by brainfuck's , command
-    io_read: Box<dyn Read>,
+    pub(crate) io_read: Box<dyn Read>,
     /// Writer used by brainfuck's . command
-    io_write: Box<dyn Write>,
+    pub(crate) io_write: Box<dyn Write>,
 }
 
 impl Interpreter {
-    pub fn new(ast: VecDeque<AstNode>) -> Self {
+    pub fn new(ast: Vec<AstNode>) -> Self {
         Self {
             program: Self::compile(ast),
             memory: vec![0u8; BF_MEMORY_SIZE],
@@ -34,23 +33,46 @@ impl Interpreter {
         }
     }
 
-    fn compile(nodes: VecDeque<AstNode>) -> Vec<Instr> {
+    fn compile(nodes: Vec<AstNode>) -> Vec<Instr> {
         let mut instrs = Vec::new();
 
         for node in nodes {
             match node {
-                AstNode::Incr(n) => instrs.push(Instr::Incr(n)),
-                AstNode::Decr(n) => instrs.push(Instr::Decr(n)),
-                AstNode::Next(n) => instrs.push(Instr::Next(n)),
-                AstNode::Prev(n) => instrs.push(Instr::Prev(n)),
-                AstNode::Print => instrs.push(Instr::Print),
-                AstNode::Read => instrs.push(Instr::Read),
-                AstNode::Set(n) => instrs.push(Instr::Set(n)),
-                AstNode::MultiplyAddTo(offset, factor) => {
-                    instrs.push(Instr::MultiplyAddTo(offset, factor));
+                AstNode::Add(offset, n) => instrs.push(Instr::Add(offset, n)),
+                AstNode::Set(offset, n) => instrs.push(Instr::Set(offset, n)),
+                AstNode::MulAdd { src, dst, factor } => {
+                    instrs.push(Instr::MulAdd { src, dst, factor });
                 }
-                AstNode::AddTo(offsets) => instrs.push(Instr::AddTo(offsets)),
-                AstNode::SubFrom(offsets) => instrs.push(Instr::SubFrom(offsets)),
+                AstNode::CondAdd {
+                    lhs,
+                    rhs,
+                    dst,
+                    value,
+                } => instrs.push(Instr::CondAdd {
+                    lhs,
+                    rhs,
+                    dst,
+                    value,
+                }),
+                AstNode::ProductAdd {
+                    base,
+                    step,
+                    count,
+                    high,
+                    dst,
+                    value,
+                } => instrs.push(Instr::ProductAdd {
+                    base,
+                    step,
+                    count,
+                    high,
+                    dst,
+                    value,
+                }),
+                AstNode::Move(n) => instrs.push(Instr::Move(n)),
+                AstNode::Print(offset) => instrs.push(Instr::Print(offset)),
+                AstNode::Read(offset) => instrs.push(Instr::Read(offset)),
+                AstNode::Scan(stride) => instrs.push(Instr::Scan(stride)),
                 AstNode::Loop(vec) => {
                     let inner_loop = Self::compile(vec);
                     // Add 1 to the offset to account for the BeginLoop/EndLoop instr
@@ -67,155 +89,140 @@ impl Interpreter {
         instrs
     }
 
-    /// Validate and calculate target memory position for operations with offsets
-    fn get_target_position(&self, offset: i16) -> Result<usize> {
-        let target_pos = isize::try_from(self.dp).unwrap() + offset as isize;
-
-        if target_pos < 0 {
+    /// Validate and calculate a memory position relative to the data pointer,
+    /// growing memory if needed.
+    fn position(&mut self, offset: i32) -> Result<usize> {
+        let Some(position) = self.dp.checked_add_signed(offset.try_into()?) else {
             bail!(
-                "Memory access below zero: attempted to access position {}",
-                target_pos
+                "Memory access below zero: attempted to access position {} + {offset}",
+                self.dp
             );
+        };
+
+        // If the position is outside of memory, expand either to a double of
+        // the current memory size, or the new position (whichever is bigger).
+        if position >= self.memory.len() {
+            let new_len = cmp::max(self.memory.len() * 2, position + 1);
+            self.memory.resize(new_len, 0);
         }
 
-        #[allow(clippy::cast_sign_loss)]
-        let target_pos = target_pos as usize;
-        if target_pos >= self.memory.len() {
-            bail!(
-                "Memory access out of bounds: attempted to access position {} (memory size: {})",
-                target_pos,
-                self.memory.len()
-            );
-        }
+        Ok(position)
+    }
 
-        Ok(target_pos)
+    fn cell(&mut self, offset: i32) -> Result<&mut u8> {
+        let position = self.position(offset)?;
+        Ok(&mut self.memory[position])
+    }
+
+    fn operand(&mut self, operand: Operand) -> Result<u8> {
+        Ok(match operand.reads() {
+            Some(offset) => operand.eval(*self.cell(offset)?),
+            None => operand.bias,
+        })
+    }
+
+    /// Move the data pointer.
+    fn shift(&mut self, amount: i32) -> Result<()> {
+        self.dp = self
+            .dp
+            .checked_add_signed(amount as isize)
+            .with_context(|| {
+                format!(
+                    "Attempted to move data pointer out of bounds: {} + {}",
+                    self.dp, amount
+                )
+            })?;
+        Ok(())
     }
 
     /// Execute a single instruction on the VM.
     ///
     /// Returns Ok(true) to continue execution, Ok(false) when the program has terminated normally,
     /// or Err(_) on execution errors.
-    #[allow(clippy::too_many_lines)]
     pub fn step(&mut self) -> Result<bool> {
         // Terminate if the program counter is outside of the program.
         if self.pc >= self.program.len() {
             return Ok(false);
         }
 
-        // If the data pointer ends up outside of memory, expand either to a
-        // double of the current memory size, or the new data pointer location
-        // (whichever is bigger).
-        if self.dp >= self.memory.len() {
-            let new_len = cmp::max(self.memory.len() * 2, self.dp + 1);
-            self.memory.resize(new_len, 0);
-        }
-
-        let instr = self.program[self.pc].clone();
-        let current = self.memory[self.dp];
-
-        match instr {
-            Instr::Incr(n) => {
-                self.memory[self.dp] = current.wrapping_add(n);
+        match self.program[self.pc] {
+            Instr::Add(offset, n) => {
+                let cell = self.cell(offset)?;
+                *cell = cell.wrapping_add(n);
             }
-            Instr::Decr(n) => {
-                self.memory[self.dp] = current.wrapping_sub(n);
+            Instr::Set(offset, n) => {
+                *self.cell(offset)? = n;
             }
-            Instr::Next(n) => {
-                self.dp = self
-                    .dp
-                    .checked_add(n as usize)
-                    .with_context(|| format!("Data pointer overflow: {} + {}", self.dp, n))?;
-            }
-            Instr::Prev(n) => {
-                if self.dp < n as usize {
-                    bail!(
-                        "Attempted to move data pointer below zero: {} - {}",
-                        self.dp,
-                        n
-                    );
+            Instr::MulAdd { src, dst, factor } => {
+                // Optimized loops which wouldn't have run don't touch the destination.
+                let value = *self.cell(src)?;
+                if value != 0 {
+                    let cell = self.cell(dst)?;
+                    *cell = cell.wrapping_add(value.wrapping_mul(factor));
                 }
-                self.dp -= n as usize;
             }
-            Instr::Print => {
+            Instr::CondAdd {
+                lhs,
+                rhs,
+                dst,
+                value,
+            } => {
+                if self.operand(lhs)? < self.operand(rhs)? {
+                    let cell = self.cell(dst)?;
+                    *cell = cell.wrapping_add(value);
+                }
+            }
+            Instr::ProductAdd {
+                base,
+                step,
+                count,
+                high,
+                dst,
+                value,
+            } => {
+                let total = u16::from(self.operand(base)?)
+                    + u16::from(self.operand(step)?) * u16::from(self.operand(count)?);
+                let [high_byte, low_byte] = total.to_be_bytes();
+                let byte = if high { high_byte } else { low_byte };
+                let cell = self.cell(dst)?;
+                *cell = cell.wrapping_add(byte.wrapping_mul(value));
+            }
+            Instr::Move(n) => self.shift(n)?,
+            Instr::Print(offset) => {
+                let value = *self.cell(offset)?;
                 self.io_write
-                    .write_all(&[current])
+                    .write_all(&[value])
                     .context("Failed to write output character")?;
             }
-            Instr::Read => {
+            Instr::Read(offset) => {
                 let mut buf = [0u8; 1];
-                match self.io_read.read_exact(&mut buf) {
-                    Ok(()) => {
-                        self.memory[self.dp] = buf[0];
-                    }
-                    Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => {
-                        // Default to newlines if the input stream is empty.
-                        self.memory[self.dp] = b'\n';
-                    }
+                let value = match self.io_read.read_exact(&mut buf) {
+                    Ok(()) => buf[0],
+                    // Default to newlines if the input stream is empty.
+                    Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => b'\n',
                     Err(error) => {
                         return Err(error).context("Failed to read input character");
                     }
-                }
+                };
+                *self.cell(offset)? = value;
             }
-            Instr::Set(n) => {
-                self.memory[self.dp] = n;
-            }
-            Instr::MultiplyAddTo(offset, factor) => {
-                if self.memory[self.dp] != 0 {
-                    let target_pos = self
-                        .get_target_position(offset)
-                        .context("Invalid target position for MultiplyAddTo operation")?;
-
-                    let value = self.memory[self.dp].wrapping_mul(factor);
-                    self.memory[target_pos] = self.memory[target_pos].wrapping_add(value);
-                    self.memory[self.dp] = 0;
-                }
-            }
-            // TODO: Examine poor performance with AddTo only seen in interpreter
-            Instr::AddTo(offsets) => {
-                if self.memory[self.dp] != 0 {
-                    let value = self.memory[self.dp];
-
-                    for offset in offsets {
-                        let target_pos = self.get_target_position(offset).with_context(|| {
-                            format!(
-                                "Invalid target position for AddTo operation at offset {offset}"
-                            )
-                        })?;
-
-                        self.memory[target_pos] = self.memory[target_pos].wrapping_add(value);
-                    }
-
-                    self.memory[self.dp] = 0;
-                }
-            }
-            Instr::SubFrom(offsets) => {
-                if self.memory[self.dp] != 0 {
-                    let value = self.memory[self.dp];
-
-                    for offset in offsets {
-                        let target_pos = self.get_target_position(offset).with_context(|| {
-                            format!(
-                                "Invalid target position for CopyTo operation at offset {offset}"
-                            )
-                        })?;
-
-                        self.memory[target_pos] = self.memory[target_pos].wrapping_sub(value);
-                    }
-
-                    self.memory[self.dp] = 0;
+            Instr::Scan(stride) => {
+                while *self.cell(0)? != 0 {
+                    self.shift(stride)?;
                 }
             }
             Instr::BeginLoop(offset) => {
-                if current == 0 {
+                if *self.cell(0)? == 0 {
                     self.pc += offset;
                 }
             }
             Instr::EndLoop(offset) => {
-                if current != 0 {
+                if *self.cell(0)? != 0 {
                     self.pc -= offset;
                 }
             }
             Instr::Syscall => {
+                self.position(0)?;
                 let result = self.do_syscall()?;
                 self.memory[self.dp] = result;
             }
@@ -307,22 +314,21 @@ mod tests {
 
     #[test]
     fn test_multiply_add_to() {
-        use crate::parser::AstNode;
-        use std::collections::VecDeque;
-
-        // Create a simple program that tests MultiplyAddTo
         // Set cell 0 to 5, then multiply by 3 and add to cell 2
-        let mut nodes = VecDeque::new();
-        nodes.push_back(AstNode::Set(5)); // Set current cell to 5
-        nodes.push_back(AstNode::MultiplyAddTo(2, 3)); // Multiply by 3, add to cell at offset +2
+        let nodes = vec![
+            AstNode::Set(0, 5),
+            AstNode::MulAdd {
+                src: 0,
+                dst: 2,
+                factor: 3,
+            },
+        ];
 
         let mut interpreter = Interpreter::new(nodes);
         // Step through the program without resetting
         while interpreter.step().unwrap_or(false) {}
 
-        // Cell 0 should be 0 (cleared after operation)
-        assert_eq!(interpreter.memory[0], 0);
-        // Cell 2 should be 15 (5 * 3)
+        assert_eq!(interpreter.memory[0], 5);
         assert_eq!(interpreter.memory[2], 15);
     }
 }

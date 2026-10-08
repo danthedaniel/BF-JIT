@@ -27,9 +27,11 @@ pub enum VTableEntry {
     Read = 1,
     Print = 2,
     Syscall = 3,
+    /// Table of compiled fragments, indexed by promise ID
+    Fragments = 4,
 }
 
-type JitCallbackFn = extern "C" fn(*mut u8, &mut JITTarget, &VTable<4>) -> *mut u8;
+type JitCallbackFn = extern "C" fn(*mut u8, &mut JITTarget, &VTable<5>) -> *mut u8;
 
 /// A buffer of executable memory that properly handles platform-specific allocation
 #[derive(Debug)]

@@ -1,4 +1,3 @@
-use std::collections::VecDeque;
 use std::ops::{Deref, DerefMut};
 
 use super::JITTarget;
@@ -17,12 +16,12 @@ impl JITPromiseID {
 /// Holds `AstNodes` for later compilation.
 #[derive(Debug)]
 pub enum JITPromise {
-    Deferred(VecDeque<AstNode>),
+    Deferred(Vec<AstNode>),
     Compiled(JITTarget),
 }
 
 impl JITPromise {
-    pub const fn source(&self) -> &VecDeque<AstNode> {
+    pub const fn source(&self) -> &Vec<AstNode> {
         #[allow(clippy::match_same_arms)]
         match self {
             Self::Deferred(source) => source,
@@ -38,7 +37,7 @@ pub struct PromiseSet(Vec<Option<JITPromise>>);
 impl PromiseSet {
     /// By either searching for an equivalent promise, or creating a new one,
     /// return a promise ID for a vector of `AstNodes`.
-    pub fn add(&mut self, nodes: VecDeque<AstNode>) -> JITPromiseID {
+    pub fn add(&mut self, nodes: Vec<AstNode>) -> JITPromiseID {
         for (index, promise) in self.iter().enumerate() {
             if let Some(promise) = promise
                 && promise.source() == &nodes

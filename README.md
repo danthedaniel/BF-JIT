@@ -9,7 +9,9 @@ without any research or examination of prior art\*.
 
 **\*Update**:
 The aarch64 implementation in `src/runnable/jit/code_gen/aarch64.rs` was written
-almost entirely by Claude 4 Opus.
+almost entirely by Claude 4 Opus. The AST, optimizer
+(`src/parser/optimizer.rs`), and code generators were later overhauled by
+Claude Opus 5.5.
 
 ## Support
 

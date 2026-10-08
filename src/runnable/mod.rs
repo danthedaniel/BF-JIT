@@ -17,4 +17,6 @@ pub trait Runnable {
 }
 
 #[cfg(test)]
+mod differential_tests;
+#[cfg(test)]
 mod test_buffer;

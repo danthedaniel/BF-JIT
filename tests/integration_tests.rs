@@ -243,7 +243,7 @@ fn test_debug_shows_ast_structure() {
     assert!(output.status.success());
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(stdout, "[Incr(3), Print]\n");
+    assert_eq!(stdout, "[Set(0, 3), Print(0)]\n");
 }
 
 #[test]
