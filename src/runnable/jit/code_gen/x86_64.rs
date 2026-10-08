@@ -10,7 +10,30 @@ const PTR_SIZE: u8 = 8;
 // r11 - JITTarget pointer
 // r12 - VTable pointer
 // eax, ecx - Temporary registers
+// edx, ebx, ebp, esi, edi, r8d, r9d, r13d, r14d - Cached memory cells within
+//   straight-line code. Only the low byte of a cached cell is meaningful.
 // r15 - BrainFuck memory base pointer (for syscalls)
+
+const RAX: u8 = 0;
+const RCX: u8 = 1;
+const RDX: u8 = 2;
+const RBX: u8 = 3;
+const RBP: u8 = 5;
+const RSI: u8 = 6;
+const RDI: u8 = 7;
+const R8: u8 = 8;
+const R9: u8 = 9;
+const R13: u8 = 13;
+const R14: u8 = 14;
+
+const MEM: u8 = 10;
+const TMP: u8 = RAX;
+const TMP2: u8 = RCX;
+const CACHE_REGS: [u8; 9] = [RDX, RBX, RBP, RSI, RDI, R8, R9, R13, R14];
+
+// Condition codes
+const CC_B: u8 = 0x2;
+const CC_AE: u8 = 0x3;
 
 fn callee_save_to_stack(bytes: &mut Vec<u8>) {
     // push   rbx
@@ -163,70 +186,291 @@ fn callee_restore_from_stack(bytes: &mut Vec<u8>) {
 /// Emit `[r10 + offset]` for an instruction whose `ModRM` reg field is `reg`.
 /// The instruction's REX prefix must include REX.B.
 fn cell_operand(bytes: &mut Vec<u8>, reg: u8, offset: i32) {
-    // ModRM: mod=10 (disp32), reg, rm=010 (r10 with REX.B)
-    bytes.push(0x82 | (reg << 3));
-    bytes.extend_from_slice(&offset.to_le_bytes());
+    if let Ok(offset) = i8::try_from(offset) {
+        // ModRM: mod=01 (disp8), reg, rm=010 (r10 with REX.B)
+        bytes.push(0x42 | ((reg & 7) << 3));
+        bytes.extend_from_slice(&offset.to_le_bytes());
+    } else {
+        // ModRM: mod=10 (disp32), reg, rm=010 (r10 with REX.B)
+        bytes.push(0x82 | ((reg & 7) << 3));
+        bytes.extend_from_slice(&offset.to_le_bytes());
+    }
 }
 
-/// movzx e<reg>, byte [r10 + offset]  (reg is eax=0, ecx=1 or edx=2)
-fn load_cell(bytes: &mut Vec<u8>, reg: u8, offset: i32) {
-    bytes.extend_from_slice(&[0x41, 0x0f, 0xb6]);
+/// Emit a REX prefix for registers in the `ModRM` reg and rm fields if one is
+/// needed. `byte_regs` forces one so that registers 4-7 refer to spl, bpl, sil
+/// and dil rather than ah, ch, dh and bh.
+fn rex(bytes: &mut Vec<u8>, reg: u8, rm: u8, byte_regs: bool) {
+    let prefix = 0x40 | ((reg >> 3) << 2) | (rm >> 3);
+    if prefix != 0x40 || byte_regs {
+        bytes.push(prefix);
+    }
+}
+
+/// Emit an instruction with register operands in the `ModRM` reg and rm fields.
+/// `reg` may also be an opcode extension.
+fn reg_op(bytes: &mut Vec<u8>, opcode: &[u8], reg: u8, rm: u8, byte_regs: bool) {
+    rex(bytes, reg, rm, byte_regs);
+    bytes.extend_from_slice(opcode);
+    bytes.push(0xc0 | ((reg & 7) << 3) | (rm & 7));
+}
+
+/// Emit an instruction with a register (or opcode extension) in the `ModRM`
+/// reg field and `[r10 + offset]` in the rm field.
+fn mem_op(bytes: &mut Vec<u8>, opcode: &[u8], reg: u8, offset: i32, byte_regs: bool) {
+    rex(bytes, reg, MEM, byte_regs);
+    bytes.extend_from_slice(opcode);
     cell_operand(bytes, reg, offset);
 }
 
-/// Load an operand's value into e<reg> (eax=0, ecx=1 or edx=2), zero-extended from a byte.
-fn load_operand(bytes: &mut Vec<u8>, reg: u8, operand: Operand) {
-    if operand.scale == 0 {
-        // mov e<reg>, imm32
-        bytes.push(0xb8 + reg);
-        bytes.extend_from_slice(&u32::from(operand.bias).to_le_bytes());
-        return;
-    }
-
-    load_cell(bytes, reg, operand.cell);
-    if operand.scale != 1 {
-        // imul e<reg>, e<reg>, imm8
-        bytes.extend_from_slice(&[0x6b, 0xc0 | (reg << 3) | reg, operand.scale]);
-    }
-    if operand.bias != 0 {
-        // add e<reg>, imm8
-        bytes.extend_from_slice(&[0x83, 0xc0 | reg, operand.bias]);
-    }
-    // movzx e<reg>, <reg>l
-    bytes.extend_from_slice(&[0x0f, 0xb6, 0xc0 | (reg << 3) | reg]);
+/// movzx e<reg>, byte [r10 + offset]
+fn load_cell(bytes: &mut Vec<u8>, reg: u8, offset: i32) {
+    mem_op(bytes, &[0x0f, 0xb6], reg, offset, false);
 }
 
-/// Compile a run of `Add`, `Set`, `MulAdd` and `CondAdd` nodes.
-pub fn straight_line(bytes: &mut Vec<u8>, nodes: &[AstNode]) {
-    for node in nodes {
+/// mov byte [r10 + offset], <reg>b
+fn store_cell(bytes: &mut Vec<u8>, reg: u8, offset: i32) {
+    mem_op(bytes, &[0x88], reg, offset, true);
+}
+
+/// mov byte [r10 + offset], value
+fn store_cell_imm(bytes: &mut Vec<u8>, offset: i32, value: u8) {
+    mem_op(bytes, &[0xc6], 0, offset, false);
+    bytes.push(value);
+}
+
+/// mov e<dst>, e<src>
+fn mov(bytes: &mut Vec<u8>, dst: u8, src: u8) {
+    reg_op(bytes, &[0x89], src, dst, false);
+}
+
+/// mov e<reg>, value
+fn mov_imm(bytes: &mut Vec<u8>, reg: u8, value: u8) {
+    rex(bytes, 0, reg, false);
+    bytes.push(0xb8 | (reg & 7));
+    bytes.extend_from_slice(&u32::from(value).to_le_bytes());
+}
+
+// Arithmetic operations, as encoded in the `ModRM` reg field of opcode 0x83
+const ADD: u8 = 0;
+const ADC: u8 = 2;
+const SBB: u8 = 3;
+const SUB: u8 = 5;
+const XOR: u8 = 6;
+const CMP: u8 = 7;
+
+/// <op> e<reg>, value  (sign-extended, which doesn't change the low byte)
+fn arith_imm(bytes: &mut Vec<u8>, op: u8, reg: u8, value: u8) {
+    reg_op(bytes, &[0x83], op, reg, false);
+    bytes.push(value);
+}
+
+/// <op> e<dst>, e<src>
+fn arith(bytes: &mut Vec<u8>, op: u8, dst: u8, src: u8) {
+    reg_op(bytes, &[(op << 3) | 0x01], src, dst, false);
+}
+
+/// cmp <lhs>b, <rhs>b
+fn cmp_bytes(bytes: &mut Vec<u8>, lhs: u8, rhs: u8) {
+    reg_op(bytes, &[0x38], rhs, lhs, true);
+}
+
+/// cmp <reg>b, value
+fn cmp_byte_imm(bytes: &mut Vec<u8>, reg: u8, value: u8) {
+    reg_op(bytes, &[0x80], CMP, reg, true);
+    bytes.push(value);
+}
+
+/// lea e<dst>, [r<base> + r<index> * scale + disp]  (scale is 1, 2, 4 or 8)
+fn lea(bytes: &mut Vec<u8>, dst: u8, base: u8, index: Option<(u8, u8)>, disp: u8) {
+    // An index field of 100 without REX.X means no index.
+    let (index, scale) = index.unwrap_or((0b100, 1));
+    let shift = match scale {
+        1 => 0,
+        2 => 1,
+        4 => 2,
+        8 => 3,
+        _ => unreachable!("invalid lea scale: {scale}"),
+    };
+    let prefix = 0x40 | ((dst >> 3) << 2) | ((index >> 3) << 1) | (base >> 3);
+    if prefix != 0x40 {
+        bytes.push(prefix);
+    }
+    bytes.push(0x8d);
+    // ModRM: mod=01 (disp8), reg=dst, rm=100 (SIB)
+    bytes.push(0x44 | ((dst & 7) << 3));
+    // SIB: scale, index, base
+    bytes.push((shift << 6) | ((index & 7) << 3) | (base & 7));
+    bytes.push(disp);
+}
+
+/// imul e<dst>, e<src>, value  (sign-extended, which doesn't change the low byte)
+fn imul_imm(bytes: &mut Vec<u8>, dst: u8, src: u8, value: u8) {
+    reg_op(bytes, &[0x6b], dst, src, false);
+    bytes.push(value);
+}
+
+/// cmov<cc> e<dst>, e<src>
+fn cmov(bytes: &mut Vec<u8>, cc: u8, dst: u8, src: u8) {
+    reg_op(bytes, &[0x0f, 0x40 | cc], dst, src, false);
+}
+
+/// set<cc> <reg>b
+fn set(bytes: &mut Vec<u8>, cc: u8, reg: u8) {
+    reg_op(bytes, &[0x0f, 0x90 | cc], 0, reg, true);
+}
+
+/// movzx e<dst>, <src>b
+fn movzx(bytes: &mut Vec<u8>, dst: u8, src: u8) {
+    reg_op(bytes, &[0x0f, 0xb6], dst, src, true);
+}
+
+/// A memory cell held in a register.
+#[derive(Clone, Copy)]
+struct Entry {
+    offset: i32,
+    reg: u8,
+    /// Whether memory is out of date
+    dirty: bool,
+    /// The cell's value if it's a known constant
+    constant: Option<u8>,
+    /// Whether the register holds the value. Constants are only moved into
+    /// registers when needed.
+    materialized: bool,
+}
+
+/// Memory cells held in registers during straight-line code.
+#[derive(Default)]
+struct CellCache {
+    /// Least recently used first
+    entries: Vec<Entry>,
+}
+
+impl CellCache {
+    /// Find or allocate the entry for a cell, loading it from memory if `load`
+    /// is set. Returns its index, which stays valid until the next lookup.
+    fn entry(&mut self, bytes: &mut Vec<u8>, offset: i32, load: bool) -> usize {
+        if let Some(index) = self.entries.iter().position(|entry| entry.offset == offset) {
+            let entry = self.entries.remove(index);
+            self.entries.push(entry);
+            return self.entries.len() - 1;
+        }
+
+        let reg = if self.entries.len() < CACHE_REGS.len() {
+            CACHE_REGS[self.entries.len()]
+        } else {
+            let evicted = self.entries.remove(0);
+            Self::write_back(bytes, evicted);
+            evicted.reg
+        };
+
+        if load {
+            load_cell(bytes, reg, offset);
+        }
+        self.entries.push(Entry {
+            offset,
+            reg,
+            dirty: false,
+            constant: None,
+            materialized: load,
+        });
+        self.entries.len() - 1
+    }
+
+    /// The known constant value of a cell, without loading it.
+    fn constant(&self, offset: i32) -> Option<u8> {
+        self.entries
+            .iter()
+            .find(|entry| entry.offset == offset)
+            .and_then(|entry| entry.constant)
+    }
+
+    /// Get a register holding the value of a cell.
+    fn read(&mut self, bytes: &mut Vec<u8>, offset: i32) -> u8 {
+        let index = self.entry(bytes, offset, true);
+        let entry = &mut self.entries[index];
+        if !entry.materialized {
+            mov_imm(bytes, entry.reg, entry.constant.unwrap());
+            entry.materialized = true;
+        }
+        entry.reg
+    }
+
+    /// Get a register holding the value of a cell which is about to be modified.
+    fn modify(&mut self, bytes: &mut Vec<u8>, offset: i32) -> u8 {
+        let reg = self.read(bytes, offset);
+        let entry = self.entries.last_mut().unwrap();
+        entry.dirty = true;
+        entry.constant = None;
+        reg
+    }
+
+    /// Get a register for a cell which is about to be overwritten.
+    fn overwrite(&mut self, bytes: &mut Vec<u8>, offset: i32) -> u8 {
+        let index = self.entry(bytes, offset, false);
+        let entry = &mut self.entries[index];
+        entry.dirty = true;
+        entry.constant = None;
+        entry.materialized = true;
+        entry.reg
+    }
+
+    fn set(&mut self, bytes: &mut Vec<u8>, offset: i32, value: u8) {
+        let index = self.entry(bytes, offset, false);
+        let entry = &mut self.entries[index];
+        entry.dirty = true;
+        entry.constant = Some(value);
+        entry.materialized = false;
+    }
+
+    fn write_back(bytes: &mut Vec<u8>, entry: Entry) {
+        if !entry.dirty {
+            return;
+        }
+        match entry.constant {
+            Some(value) if !entry.materialized => store_cell_imm(bytes, entry.offset, value),
+            _ => store_cell(bytes, entry.reg, entry.offset),
+        }
+    }
+
+    fn flush(self, bytes: &mut Vec<u8>) {
+        for entry in self.entries {
+            Self::write_back(bytes, entry);
+        }
+    }
+
+    /// Replace cells with known values by constants.
+    fn fold(&self, operand: Operand) -> Operand {
+        match operand.reads().and_then(|cell| self.constant(cell)) {
+            Some(value) => Operand::constant(operand.eval(value)),
+            None => operand,
+        }
+    }
+
+    /// Compile a straight-line node.
+    fn node(&mut self, bytes: &mut Vec<u8>, node: &AstNode) {
         match *node {
             AstNode::Add(offset, value) => {
-                // add byte [r10 + offset], value
-                bytes.extend_from_slice(&[0x41, 0x80]);
-                cell_operand(bytes, 0, offset);
-                bytes.push(value);
-            }
-            AstNode::Set(offset, value) => {
-                // mov byte [r10 + offset], value
-                bytes.extend_from_slice(&[0x41, 0xc6]);
-                cell_operand(bytes, 0, offset);
-                bytes.push(value);
-            }
-            AstNode::MulAdd { src, dst, factor } => {
-                load_cell(bytes, 0, src);
-                let opcode = if factor == u8::MAX {
-                    // sub byte [r10 + dst], al
-                    0x28
+                if let Some(constant) = self.constant(offset) {
+                    self.set(bytes, offset, constant.wrapping_add(value));
                 } else {
-                    if factor != 1 {
-                        // imul eax, eax, factor
-                        bytes.extend_from_slice(&[0x6b, 0xc0, factor]);
-                    }
-                    // add byte [r10 + dst], al
-                    0x00
-                };
-                bytes.extend_from_slice(&[0x41, opcode]);
-                cell_operand(bytes, 0, dst);
+                    let reg = self.modify(bytes, offset);
+                    arith_imm(bytes, ADD, reg, value);
+                }
+            }
+            AstNode::Set(offset, value) => self.set(bytes, offset, value),
+            AstNode::MulAdd { src, dst, factor } => {
+                if let Some(constant) = self.constant(src) {
+                    self.node(bytes, &AstNode::Add(dst, constant.wrapping_mul(factor)));
+                } else if src != dst && self.constant(dst) == Some(0) {
+                    let src_reg = self.read(bytes, src);
+                    let dst_reg = self.overwrite(bytes, dst);
+                    multiply(bytes, src_reg, dst_reg, factor);
+                } else {
+                    let src_reg = self.read(bytes, src);
+                    let dst_reg = self.modify(bytes, dst);
+                    multiply_add(bytes, src_reg, dst_reg, factor);
+                }
             }
             AstNode::CondAdd {
                 lhs,
@@ -234,16 +478,34 @@ pub fn straight_line(bytes: &mut Vec<u8>, nodes: &[AstNode]) {
                 dst,
                 value,
             } => {
-                load_operand(bytes, 0, lhs);
-                load_operand(bytes, 1, rhs);
-                // cmp eax, ecx
-                bytes.extend_from_slice(&[0x39, 0xc8]);
-                // jae over the add
-                bytes.extend_from_slice(&[0x73, 8]);
-                // add byte [r10 + dst], value
-                bytes.extend_from_slice(&[0x41, 0x80]);
-                cell_operand(bytes, 0, dst);
-                bytes.push(value);
+                let (lhs, rhs) = (self.fold(lhs), self.fold(rhs));
+                match (lhs.reads(), rhs.reads()) {
+                    (None, None) => {
+                        if lhs.bias < rhs.bias {
+                            self.node(bytes, &AstNode::Add(dst, value));
+                        }
+                        return;
+                    }
+                    // Nothing is greater than 255 or less than 0.
+                    (None, Some(_)) if lhs.bias == u8::MAX => return,
+                    (Some(_), None) if rhs.bias == 0 => return,
+                    _ => {}
+                }
+                let lhs_reg = lhs.reads().map(|cell| self.read(bytes, cell));
+                let rhs_reg = rhs.reads().map(|cell| self.read(bytes, cell));
+                let constant = self.constant(dst);
+                let dst_reg = if constant.is_some() {
+                    self.overwrite(bytes, dst)
+                } else {
+                    self.modify(bytes, dst)
+                };
+                conditional_add(
+                    bytes,
+                    (lhs, lhs_reg),
+                    (rhs, rhs_reg),
+                    (dst_reg, constant),
+                    value,
+                );
             }
             AstNode::ProductAdd {
                 base,
@@ -253,28 +515,188 @@ pub fn straight_line(bytes: &mut Vec<u8>, nodes: &[AstNode]) {
                 dst,
                 value,
             } => {
-                load_operand(bytes, 0, base);
-                load_operand(bytes, 1, step);
-                load_operand(bytes, 2, count);
-                // imul ecx, edx
-                bytes.extend_from_slice(&[0x0f, 0xaf, 0xca]);
-                // add eax, ecx
-                bytes.extend_from_slice(&[0x01, 0xc8]);
-                if high {
-                    // shr eax, 8
-                    bytes.extend_from_slice(&[0xc1, 0xe8, 0x08]);
-                }
-                if value != 1 {
-                    // imul eax, eax, value
-                    bytes.extend_from_slice(&[0x6b, 0xc0, value]);
-                }
-                // add byte [r10 + dst], al
-                bytes.extend_from_slice(&[0x41, 0x00]);
-                cell_operand(bytes, 0, dst);
+                let operands = [base, step, count].map(|operand| {
+                    let operand = self.fold(operand);
+                    (operand, operand.reads().map(|cell| self.read(bytes, cell)))
+                });
+                let dst_reg = self.modify(bytes, dst);
+                product_add(bytes, operands, high, dst_reg, value);
             }
             _ => unreachable!("not a straight-line node: {node:?}"),
         }
     }
+}
+
+/// Compile a run of `Add`, `Set`, `MulAdd`, `CondAdd` and `ProductAdd` nodes.
+/// Cells are kept in registers and written back at the end.
+pub fn straight_line(bytes: &mut Vec<u8>, nodes: &[AstNode]) {
+    let mut cache = CellCache::default();
+    for node in nodes {
+        cache.node(bytes, node);
+    }
+    cache.flush(bytes);
+}
+
+/// e<rd> = e<rn> * factor, where rn and rd differ.
+fn multiply(bytes: &mut Vec<u8>, rn: u8, rd: u8, factor: u8) {
+    match factor {
+        1 => mov(bytes, rd, rn),
+        u8::MAX => {
+            mov(bytes, rd, rn);
+            // neg e<rd>
+            reg_op(bytes, &[0xf7], 3, rd, false);
+        }
+        // lea e<rd>, [r<rn> + r<rn> * (factor - 1)]
+        2 | 3 | 5 | 9 => lea(bytes, rd, rn, Some((rn, factor - 1)), 0),
+        _ => imul_imm(bytes, rd, rn, factor),
+    }
+}
+
+/// e<rd> += e<rn> * factor
+fn multiply_add(bytes: &mut Vec<u8>, rn: u8, rd: u8, factor: u8) {
+    match factor {
+        // e<rd> * 255 == -e<rd>
+        // neg e<rd>
+        254 if rn == rd => reg_op(bytes, &[0xf7], 3, rd, false),
+        1 => arith(bytes, ADD, rd, rn),
+        u8::MAX => arith(bytes, SUB, rd, rn),
+        // lea e<rd>, [r<rd> + r<rn> * factor]
+        2 | 4 | 8 => lea(bytes, rd, rd, Some((rn, factor)), 0),
+        _ => {
+            imul_imm(bytes, TMP, rn, factor);
+            arith(bytes, ADD, rd, TMP);
+        }
+    }
+}
+
+/// Get a register whose low byte holds the value of an operand which reads
+/// the cell in register `reg`, computing it in `tmp` if needed.
+fn operand_reg(bytes: &mut Vec<u8>, operand: Operand, reg: u8, tmp: u8) -> u8 {
+    match (operand.scale, operand.bias) {
+        (1, 0) => return reg,
+        // lea e<tmp>, [r<reg> + bias]
+        (1, bias) => lea(bytes, tmp, reg, None, bias),
+        (u8::MAX, u8::MAX) => {
+            mov(bytes, tmp, reg);
+            // not e<tmp>
+            reg_op(bytes, &[0xf7], 2, tmp, false);
+        }
+        (scale @ (2 | 3 | 5 | 9), bias) => {
+            // lea e<tmp>, [r<reg> + r<reg> * (scale - 1) + bias]
+            lea(bytes, tmp, reg, Some((reg, scale - 1)), bias);
+        }
+        (scale, bias) => {
+            imul_imm(bytes, tmp, reg, scale);
+            if bias != 0 {
+                arith_imm(bytes, ADD, tmp, bias);
+            }
+        }
+    }
+    tmp
+}
+
+/// Compare `lhs < rhs`, returning the condition code which holds if it's true.
+/// At least one operand must read a cell, and a constant `lhs` must be below
+/// 255.
+fn compare(bytes: &mut Vec<u8>, lhs: (Operand, Option<u8>), rhs: (Operand, Option<u8>)) -> u8 {
+    match (lhs, rhs) {
+        ((l, None), (r, Some(reg))) => {
+            // lhs < rhs <=> rhs >= lhs + 1
+            let reg = operand_reg(bytes, r, reg, TMP2);
+            cmp_byte_imm(bytes, reg, l.bias + 1);
+            CC_AE
+        }
+        ((l, Some(reg)), (r, None)) => {
+            let reg = operand_reg(bytes, l, reg, TMP);
+            cmp_byte_imm(bytes, reg, r.bias);
+            CC_B
+        }
+        ((l, Some(lreg)), (r, Some(rreg))) => {
+            let lreg = operand_reg(bytes, l, lreg, TMP);
+            let rreg = operand_reg(bytes, r, rreg, TMP2);
+            cmp_bytes(bytes, lreg, rreg);
+            CC_B
+        }
+        ((_, None), (_, None)) => unreachable!("comparison of constants"),
+    }
+}
+
+/// e<rd> += value if lhs < rhs, without branching. Operands which read a cell
+/// come with its register. `rd` comes with the cell's constant value if it's
+/// known, in which case the register doesn't hold it yet.
+fn conditional_add(
+    bytes: &mut Vec<u8>,
+    lhs: (Operand, Option<u8>),
+    rhs: (Operand, Option<u8>),
+    (rd, constant): (u8, Option<u8>),
+    value: u8,
+) {
+    // Whether the result is just the condition (or its inverse), as a byte
+    let flag = matches!((constant, value), (Some(0), 1) | (Some(1), u8::MAX));
+
+    // Prepare the register before the comparison sets the flags.
+    match constant {
+        // xor e<rd>, e<rd>
+        Some(_) if flag => arith(bytes, XOR, rd, rd),
+        Some(constant) => mov_imm(bytes, rd, constant),
+        None => {}
+    }
+
+    let cc = compare(bytes, lhs, rhs);
+    if flag {
+        // Inverting a condition code flips its lowest bit.
+        let cc = if constant == Some(0) { cc } else { cc ^ 1 };
+        set(bytes, cc, rd);
+        return;
+    }
+
+    // The carry flag is set if the condition is CC_B, and clear if it's CC_AE.
+    match (value, cc) {
+        (1, CC_B) => arith_imm(bytes, ADC, rd, 0),
+        // e<rd> - -1 - CF
+        (1, _) => arith_imm(bytes, SBB, rd, u8::MAX),
+        (u8::MAX, CC_B) => arith_imm(bytes, SBB, rd, 0),
+        // e<rd> + -1 + CF
+        (u8::MAX, _) => arith_imm(bytes, ADC, rd, u8::MAX),
+        _ => {
+            // lea e<tmp>, [r<rd> + value]
+            lea(bytes, TMP, rd, None, value);
+            cmov(bytes, cc, rd, TMP);
+        }
+    }
+}
+
+/// Load the byte value of an operand into `tmp`, zero-extended.
+fn byte_value(bytes: &mut Vec<u8>, (operand, reg): (Operand, Option<u8>), tmp: u8) {
+    match reg {
+        Some(reg) => {
+            let reg = operand_reg(bytes, operand, reg, tmp);
+            movzx(bytes, tmp, reg);
+        }
+        None => mov_imm(bytes, tmp, operand.bias),
+    }
+}
+
+/// e<rd> += value * byte of (base + step * count)
+fn product_add(
+    bytes: &mut Vec<u8>,
+    [base, step, count]: [(Operand, Option<u8>); 3],
+    high: bool,
+    rd: u8,
+    value: u8,
+) {
+    byte_value(bytes, step, TMP);
+    byte_value(bytes, count, TMP2);
+    // imul eax, ecx
+    reg_op(bytes, &[0x0f, 0xaf], TMP, TMP2, false);
+    byte_value(bytes, base, TMP2);
+    arith(bytes, ADD, TMP, TMP2);
+    if high {
+        // shr eax, 8
+        reg_op(bytes, &[0xc1], 5, TMP, false);
+        bytes.push(8);
+    }
+    multiply_add(bytes, TMP, rd, value);
 }
 
 pub fn move_pointer(bytes: &mut Vec<u8>, amount: i32) {

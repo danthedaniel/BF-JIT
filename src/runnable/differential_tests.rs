@@ -6,7 +6,7 @@ use super::int::Interpreter;
 #[cfg(feature = "jit")]
 use super::jit::JITTarget;
 use super::test_buffer::TestBuffer;
-use crate::parser::{AstNode, max_offset};
+use crate::parser::{AstNode, Operand, max_offset};
 
 const TAPE: usize = 64;
 /// Programs start by moving to the middle of the tape so they can move left.
@@ -259,5 +259,93 @@ fn multi_byte_edge_cases() {
             }
         }
         assert!(checked > values.len() * values.len(), "{fragment}");
+    }
+}
+
+fn random_byte(rng: &mut Rng) -> u8 {
+    u8::try_from(rng.below(256)).unwrap()
+}
+
+/// One of `cells` cells around the data pointer.
+fn random_cell(rng: &mut Rng, cells: usize) -> i32 {
+    i32::try_from(rng.below(cells)).unwrap() - i32::try_from(cells / 2).unwrap()
+}
+
+fn random_operand(rng: &mut Rng, cells: usize) -> Operand {
+    if rng.below(4) == 0 {
+        return Operand::constant(random_byte(rng));
+    }
+    Operand {
+        cell: random_cell(rng, cells),
+        scale: [1, 1, 1, 255, 2, 3, 4, 7, 254][rng.below(9)],
+        bias: [0, 0, 1, 255, random_byte(rng)][rng.below(5)],
+    }
+}
+
+/// A random straight-line node. Loop bodies don't write to the counter.
+fn random_node(rng: &mut Rng, cells: usize, in_loop: bool) -> AstNode {
+    let dst = loop {
+        let cell = random_cell(rng, cells);
+        if !in_loop || cell != 0 {
+            break cell;
+        }
+    };
+    let value = [1, 255, random_byte(rng)][rng.below(3)];
+    match rng.below(6) {
+        0 => AstNode::Add(dst, random_byte(rng)),
+        1 => AstNode::Set(dst, random_byte(rng)),
+        2 => AstNode::MulAdd {
+            src: random_cell(rng, cells),
+            dst,
+            factor: [1, 255, 2, 3, 4, 254, random_byte(rng)][rng.below(7)],
+        },
+        3 | 4 => AstNode::CondAdd {
+            lhs: random_operand(rng, cells),
+            rhs: random_operand(rng, cells),
+            dst,
+            value,
+        },
+        _ => AstNode::ProductAdd {
+            base: random_operand(rng, cells),
+            step: random_operand(rng, cells),
+            count: random_operand(rng, cells),
+            high: rng.below(2) == 0,
+            dst,
+            value,
+        },
+    }
+}
+
+/// Random straight-line code on cells read from input, so they aren't known
+/// constants, optionally in a loop.
+#[cfg(feature = "jit")]
+#[test]
+fn straight_line_matches_interpreter() {
+    let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
+
+    for _ in 0..3000 {
+        let cells = [4, 8, 14][rng.below(3)];
+        let mut ast = vec![AstNode::Move(i32::try_from(START).unwrap())];
+        let first = -i32::try_from(cells / 2).unwrap();
+        ast.extend((first..).take(cells).map(AstNode::Read));
+
+        let in_loop = rng.below(2) == 0;
+        let mut body: Vec<_> = (0..rng.below(40))
+            .map(|_| random_node(&mut rng, cells, in_loop))
+            .collect();
+        if in_loop {
+            body.push(AstNode::Add(0, 255));
+            ast.push(AstNode::Loop(body));
+            ast.extend((0..rng.below(8)).map(|_| random_node(&mut rng, cells, false)));
+        } else {
+            ast.extend(body);
+        }
+
+        let input: Vec<u8> = (0..cells).map(|_| random_byte(&mut rng)).collect();
+        assert_eq!(
+            interpret(ast.clone(), &input),
+            jit(ast.clone(), &input),
+            "{ast:?} {input:?}"
+        );
     }
 }
