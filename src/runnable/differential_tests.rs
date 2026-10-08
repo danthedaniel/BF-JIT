@@ -273,7 +273,7 @@ fn random_cell(rng: &mut Rng, cells: usize) -> i32 {
 
 fn random_operand(rng: &mut Rng, cells: usize) -> Operand {
     if rng.below(4) == 0 {
-        return Operand::constant(random_byte(rng));
+        return Operand::constant([0, 1, 254, 255, random_byte(rng)][rng.below(5)]);
     }
     Operand {
         cell: random_cell(rng, cells),

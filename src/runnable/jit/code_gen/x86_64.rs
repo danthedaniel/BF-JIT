@@ -274,6 +274,11 @@ fn arith(bytes: &mut Vec<u8>, op: u8, dst: u8, src: u8) {
     reg_op(bytes, &[(op << 3) | 0x01], src, dst, false);
 }
 
+/// add <dst>b, <src>b
+fn add_bytes(bytes: &mut Vec<u8>, dst: u8, src: u8) {
+    reg_op(bytes, &[0x00], src, dst, true);
+}
+
 /// cmp <lhs>b, <rhs>b
 fn cmp_bytes(bytes: &mut Vec<u8>, lhs: u8, rhs: u8) {
     reg_op(bytes, &[0x38], rhs, lhs, true);
@@ -663,8 +668,7 @@ impl CellCache {
         let x_reg = self.modify(bytes, x);
         let dst = self.conditional_dst(bytes, dst);
         conditional_add(bytes, dst, value, |bytes| {
-            // add <x>b, <y>b
-            reg_op(bytes, &[0x00], y_reg, x_reg, true);
+            add_bytes(bytes, x_reg, y_reg);
             CC_B
         });
         true
@@ -1036,6 +1040,29 @@ fn operand_reg(bytes: &mut Vec<u8>, operand: Operand, reg: u8, tmp: u8) -> u8 {
 /// 255.
 fn compare(bytes: &mut Vec<u8>, lhs: (Operand, Option<u8>), rhs: (Operand, Option<u8>)) -> u8 {
     match (lhs, rhs) {
+        // lhs < x + (lhs + 1) <=> the addition doesn't wrap <=> x < 256 - (lhs + 1)
+        ((l, None), (r, Some(reg))) if r.scale == 1 && r.bias != 0 && r.bias == l.bias + 1 => {
+            cmp_byte_imm(bytes, reg, r.bias.wrapping_neg());
+            CC_B
+        }
+        // ~x < rhs <=> adding rhs to x carries <=> x >= 256 - rhs
+        ((l, Some(reg)), (r, None)) if (l.scale, l.bias) == (u8::MAX, u8::MAX) => {
+            cmp_byte_imm(bytes, reg, r.bias.wrapping_neg());
+            CC_AE
+        }
+        // x + rhs < rhs <=> the addition wraps <=> x >= 256 - rhs
+        ((l, Some(reg)), (r, None)) if l.scale == 1 && l.bias == r.bias => {
+            cmp_byte_imm(bytes, reg, r.bias.wrapping_neg());
+            CC_AE
+        }
+        // ~x < y <=> adding y to x carries
+        ((l, Some(lreg)), (r, Some(rreg)))
+            if (l.scale, l.bias, r.scale, r.bias) == (u8::MAX, u8::MAX, 1, 0) =>
+        {
+            mov(bytes, TMP, lreg);
+            add_bytes(bytes, TMP, rreg);
+            CC_B
+        }
         ((l, None), (r, Some(reg))) => {
             // lhs < rhs <=> rhs >= lhs + 1
             let reg = operand_reg(bytes, r, reg, TMP2);
