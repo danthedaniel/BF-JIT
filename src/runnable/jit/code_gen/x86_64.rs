@@ -281,6 +281,11 @@ fn cmp_byte_imm(bytes: &mut Vec<u8>, reg: u8, value: u8) {
     bytes.push(value);
 }
 
+/// test <reg>b, <reg>b
+fn test_byte(bytes: &mut Vec<u8>, reg: u8) {
+    reg_op(bytes, &[0x84], reg, reg, true);
+}
+
 /// lea e<dst>, [r<base> + r<index> * scale + disp]  (scale is 1, 2, 4 or 8)
 fn lea(bytes: &mut Vec<u8>, dst: u8, base: u8, index: Option<(u8, u8)>, disp: u8) {
     // An index field of 100 without REX.X means no index.
@@ -535,6 +540,78 @@ pub fn straight_line(bytes: &mut Vec<u8>, nodes: &[AstNode]) {
         cache.node(bytes, node);
     }
     cache.flush(bytes);
+}
+
+/// Compile a loop whose body is straight-line code which doesn't move the
+/// data pointer, keeping all cells in registers across iterations. Returns
+/// false if there are too many cells.
+pub fn register_loop(bytes: &mut Vec<u8>, nodes: &[AstNode]) -> bool {
+    let mut cells = vec![0];
+    for node in nodes {
+        match *node {
+            AstNode::Add(offset, _) | AstNode::Set(offset, _) => cells.push(offset),
+            AstNode::MulAdd { src, dst, .. } => cells.extend([src, dst]),
+            AstNode::CondAdd { lhs, rhs, dst, .. } => {
+                cells.extend(lhs.reads().into_iter().chain(rhs.reads()).chain([dst]));
+            }
+            AstNode::ProductAdd {
+                base,
+                step,
+                count,
+                dst,
+                ..
+            } => cells.extend(
+                [base, step, count]
+                    .iter()
+                    .filter_map(|o| o.reads())
+                    .chain([dst]),
+            ),
+            _ => unreachable!("not a straight-line node: {node:?}"),
+        }
+    }
+    cells.sort_unstable();
+    cells.dedup();
+    if cells.len() > CACHE_REGS.len() {
+        return false;
+    }
+
+    let mut head = Vec::new();
+    let mut cache = CellCache::default();
+    for &cell in &cells {
+        cache.read(&mut head, cell);
+    }
+    let counter = cache.read(&mut head, 0);
+
+    let mut body = Vec::new();
+    for node in nodes {
+        cache.node(&mut body, node);
+    }
+    // A loop which sets its counter runs at most once (or forever), so loading
+    // every cell up front doesn't pay off.
+    if cache.constant(0).is_some() {
+        return false;
+    }
+    bytes.extend(head);
+
+    // Every cell must be in its register at the end of each iteration.
+    for &cell in &cells {
+        cache.read(&mut body, cell);
+    }
+    test_byte(&mut body, counter);
+
+    // Length of the body including the jnz at its end
+    let body_len = i32::try_from(body.len()).unwrap() + 6;
+    test_byte(bytes, counter);
+    // jz     end
+    bytes.extend_from_slice(&[0x0f, 0x84]);
+    bytes.extend_from_slice(&body_len.to_le_bytes());
+    bytes.extend(body);
+    // jnz    start
+    bytes.extend_from_slice(&[0x0f, 0x85]);
+    bytes.extend_from_slice(&(-body_len).to_le_bytes());
+
+    cache.flush(bytes);
+    true
 }
 
 /// e<rd> = e<rn> * factor, where rn and rd differ.

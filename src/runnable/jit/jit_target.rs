@@ -139,7 +139,6 @@ impl JITTarget {
     fn compile_loop(mut nodes: Vec<AstNode>, context: &Rc<RefCell<JITContext>>) -> Vec<u8> {
         let mut bytes = Vec::new();
 
-        #[cfg(target_arch = "aarch64")]
         if nodes.iter().all(Self::is_straight_line) && code_gen::register_loop(&mut bytes, &nodes) {
             return bytes;
         }
