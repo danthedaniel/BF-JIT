@@ -4,7 +4,7 @@
 //! effect are replaced by straight-line code, and straight-line code is
 //! symbolically executed and re-emitted with the minimum number of writes.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::rc::Rc;
 
 use super::{AstNode, Operand};
@@ -27,10 +27,60 @@ pub fn optimize(nodes: Vec<AstNode>, keep_tape: bool) -> Vec<AstNode> {
     optimize_block(annotate(nodes), Known::zeroed(), &live)
 }
 
+/// A map from cells to values, sorted by cell. The maps used while
+/// optimizing hold few cells and are created and cloned a lot, which a
+/// vector is much cheaper for than a tree.
+#[derive(Clone)]
+struct CellMap<V>(Vec<(i32, V)>);
+
+impl<V> Default for CellMap<V> {
+    fn default() -> Self {
+        Self(Vec::new())
+    }
+}
+
+impl<V> CellMap<V> {
+    fn find(&self, cell: i32) -> Result<usize, usize> {
+        self.0.binary_search_by_key(&cell, |&(other, _)| other)
+    }
+
+    fn get(&self, cell: i32) -> Option<&V> {
+        let index = self.find(cell).ok()?;
+        Some(&self.0[index].1)
+    }
+
+    fn insert(&mut self, cell: i32, value: V) {
+        match self.find(cell) {
+            Ok(index) => self.0[index].1 = value,
+            Err(index) => self.0.insert(index, (cell, value)),
+        }
+    }
+
+    /// The value of a cell, inserting `value()` if there is none.
+    fn get_or_insert_with(&mut self, cell: i32, value: impl FnOnce() -> V) -> &mut V {
+        let index = match self.find(cell) {
+            Ok(index) => index,
+            Err(index) => {
+                self.0.insert(index, (cell, value()));
+                index
+            }
+        };
+        &mut self.0[index].1
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (i32, &V)> {
+        self.0.iter().map(|(cell, value)| (*cell, value))
+    }
+
+    fn keys(&self) -> impl Iterator<Item = i32> {
+        self.0.iter().map(|&(cell, _)| cell)
+    }
+}
+
 /// Knowledge about cell values relative to some data pointer position.
 #[derive(Clone, Default)]
 struct Known {
-    values: BTreeMap<i32, Option<u8>>,
+    values: CellMap<Option<u8>>,
     /// Value of every cell not in `values`.
     default: Option<u8>,
 }
@@ -38,7 +88,7 @@ struct Known {
 impl Known {
     fn zeroed() -> Self {
         Self {
-            values: BTreeMap::new(),
+            values: CellMap::default(),
             default: Some(0),
         }
     }
@@ -46,25 +96,24 @@ impl Known {
     /// State at the exit of a loop: the current cell is zero.
     fn loop_exit() -> Self {
         Self {
-            values: BTreeMap::from([(0, Some(0))]),
+            values: CellMap(vec![(0, Some(0))]),
             default: None,
         }
     }
 
     fn get(&self, offset: i32) -> Option<u8> {
-        self.values.get(&offset).copied().unwrap_or(self.default)
+        self.values.get(offset).copied().unwrap_or(self.default)
     }
 
     /// Re-base after the data pointer moved by `amount`. Forgets about
     /// distant cells to keep optimization fast.
     fn shift(&mut self, amount: i32) {
-        let keep = |offset: i32| self.default.is_some() || offset.abs() <= MAX_KNOWN_DISTANCE;
-        self.values = self
-            .values
-            .iter()
-            .map(|(offset, value)| (offset - amount, *value))
-            .filter(|(offset, _)| keep(*offset))
-            .collect();
+        let keep_all = self.default.is_some();
+        // Shifting every cell by the same amount keeps them sorted.
+        self.values.0.retain_mut(|(offset, _)| {
+            *offset -= amount;
+            keep_all || offset.abs() <= MAX_KNOWN_DISTANCE
+        });
     }
 }
 
@@ -513,14 +562,14 @@ impl Expr {
 /// Symbolic execution of a straight-line run of nodes.
 struct Affine {
     known: Known,
-    exprs: BTreeMap<i32, Expr>,
+    exprs: CellMap<Expr>,
 }
 
 impl Affine {
     fn new(known: Known) -> Self {
         Self {
             known,
-            exprs: BTreeMap::new(),
+            exprs: CellMap::default(),
         }
     }
 
@@ -532,7 +581,7 @@ impl Affine {
 
     fn get(&self, offset: i32) -> Expr {
         self.exprs
-            .get(&offset)
+            .get(offset)
             .cloned()
             .unwrap_or_else(|| self.initial(offset))
     }
@@ -541,8 +590,7 @@ impl Affine {
     fn get_mut(&mut self, offset: i32) -> &mut Expr {
         let initial = self.known.get(offset);
         self.exprs
-            .entry(offset)
-            .or_insert_with(|| initial.map_or_else(|| Expr::cell(offset), Expr::constant))
+            .get_or_insert_with(offset, || initial.map_or_else(|| Expr::cell(offset), Expr::constant))
     }
 
     /// Whether an expression is the initial value of a cell.
@@ -582,7 +630,7 @@ impl Affine {
         };
         let size: usize = cells
             .into_iter()
-            .filter_map(|cell| self.exprs.get(&cell))
+            .filter_map(|cell| self.exprs.get(cell))
             .map(Expr::size)
             .sum();
         size > MAX_EXPR_SIZE
@@ -634,8 +682,7 @@ impl Affine {
     fn changed(&self) -> impl Iterator<Item = (i32, &Expr)> {
         self.exprs
             .iter()
-            .filter(|&(&offset, expr)| !self.is_initial(offset, expr))
-            .map(|(&offset, expr)| (offset, expr))
+            .filter(|&(offset, expr)| !self.is_initial(offset, expr))
     }
 
     /// Knowledge about cells after this block.
@@ -672,8 +719,8 @@ impl Affine {
         let scratch: Vec<(i32, Option<u8>)> = self
             .exprs
             .keys()
-            .filter(|&offset| read.binary_search(offset).is_err())
-            .filter_map(|&offset| {
+            .filter(|offset| read.binary_search(offset).is_err())
+            .filter_map(|offset| {
                 let index = changed.binary_search_by_key(&offset, |&(cell, _)| cell);
                 let restore = match index {
                     _ if !live.contains(offset) => None,
@@ -1321,7 +1368,7 @@ fn solve_loop(body: &[AstNode], entry: &Known, exit: &Live, live: &Live) -> Opti
     // Cells set to a constant keep their value if the loop doesn't run. If
     // that value isn't known and is used later, the solution only applies if
     // the loop runs.
-    let guarded = affine.exprs.iter().any(|(&offset, expr)| {
+    let guarded = affine.exprs.iter().any(|(offset, expr)| {
         offset != 0
             && expr.as_constant().is_some()
             && entry.get(offset).is_none()
@@ -1335,7 +1382,7 @@ fn solve_loop(body: &[AstNode], entry: &Known, exit: &Live, live: &Live) -> Opti
         entry.clone()
     });
 
-    for (&offset, expr) in &affine.exprs {
+    for (offset, expr) in affine.exprs.iter() {
         let value = if !live.contains(offset) {
             // Unchanged, but available as scratch space.
             Expr::cell(offset)
