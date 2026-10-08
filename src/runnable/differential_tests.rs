@@ -67,6 +67,148 @@ impl Rng {
     }
 }
 
+/// Brainfuck code written cell by cell, keeping track of the data pointer.
+#[derive(Default)]
+struct Code {
+    text: String,
+    pointer: i32,
+}
+
+impl Code {
+    fn goto(&mut self, cell: i32) {
+        let step = if cell > self.pointer { ">" } else { "<" };
+        self.text
+            .push_str(&step.repeat((cell - self.pointer).unsigned_abs() as usize));
+        self.pointer = cell;
+    }
+
+    fn add(&mut self, cell: i32, amount: i32) {
+        self.goto(cell);
+        let step = if amount > 0 { "+" } else { "-" };
+        self.text
+            .push_str(&step.repeat(amount.unsigned_abs() as usize));
+    }
+
+    fn clear(&mut self, cell: i32) {
+        self.goto(cell);
+        self.text.push_str("[-]");
+    }
+
+    /// Loop while `cell` is non-zero.
+    fn repeat(&mut self, cell: i32, body: impl FnOnce(&mut Self)) {
+        self.goto(cell);
+        self.text.push('[');
+        body(self);
+        self.goto(cell);
+        self.text.push(']');
+    }
+
+    /// Move `src` into `dsts`, adding it to each with the given sign.
+    fn move_into(&mut self, src: i32, dsts: &[(i32, i32)]) {
+        self.repeat(src, |code| {
+            code.add(src, -1);
+            for &(dst, sign) in dsts {
+                code.add(dst, sign);
+            }
+        });
+    }
+
+    /// Add `src` to the byte `low`, incrementing `high` whenever that wraps.
+    /// Clears `src`, using temporaries `t` and `u`.
+    fn add_with_carry(&mut self, src: i32, low: i32, high: i32, (t, u): (i32, i32)) {
+        self.repeat(src, |code| {
+            code.add(src, -1);
+            code.add(low, 1);
+            code.clear(t);
+            code.clear(u);
+            code.add(u, 1);
+            code.repeat(low, |code| {
+                code.add(low, -1);
+                code.add(t, 1);
+                code.clear(u);
+            });
+            code.move_into(t, &[(low, 1)]);
+            code.move_into(u, &[(high, 1)]);
+        });
+    }
+}
+
+/// A loop dividing the two byte number in cells 1 and 2 by cell 3 through
+/// repeated subtraction, counting in cell 4. Cell 0 is the loop flag and
+/// cells 5 to 14 are temporaries.
+///
+/// Like compiled code, it adds the negated divisor and checks for a carry,
+/// so the loop also ends when the divisor is zero. With `quirk`, it counts
+/// twice when dividing by 200.
+fn divide_loop(quirk: bool) -> String {
+    let (flag, low, high, divisor, quotient) = (0, 1, 2, 3, 4);
+    let (negated_low, negated_high, t, u, carry, done, more, x) = (5, 6, 7, 8, 9, 10, 11, 12);
+    let temporaries = (13, 14);
+
+    let mut code = Code::default();
+    code.repeat(flag, |code| {
+        code.add(flag, -1);
+
+        // negated = 65536 - divisor, where the high byte is 255 unless the
+        // divisor is zero
+        code.clear(negated_low);
+        code.clear(t);
+        code.move_into(divisor, &[(negated_low, -1), (t, 1)]);
+        code.move_into(t, &[(divisor, 1)]);
+        code.clear(u);
+        code.move_into(negated_low, &[(t, 1), (u, 1)]);
+        code.move_into(u, &[(negated_low, 1)]);
+        code.add(u, 1);
+        code.repeat(t, |code| {
+            code.clear(t);
+            code.add(u, -1);
+        });
+        code.clear(negated_high);
+        code.add(negated_high, -1);
+        code.move_into(u, &[(negated_high, 1)]);
+
+        // Add it to the dividend, with the carry out in `done`.
+        code.clear(carry);
+        code.add_with_carry(negated_low, low, carry, temporaries);
+        code.clear(done);
+        code.add_with_carry(carry, high, done, temporaries);
+        code.add_with_carry(negated_high, high, done, temporaries);
+
+        // Count if it didn't drop below zero, otherwise undo that and stop.
+        code.clear(more);
+        code.add(more, 1);
+        code.repeat(done, |code| {
+            code.add(done, -1);
+            code.add(quotient, 1);
+            code.add(flag, 1);
+            code.add(more, -1);
+            if quirk {
+                code.clear(t);
+                code.clear(u);
+                code.move_into(divisor, &[(t, 1), (u, 1)]);
+                code.move_into(u, &[(divisor, 1)]);
+                code.add(t, -200);
+                code.add(u, 1);
+                code.repeat(t, |code| {
+                    code.clear(t);
+                    code.add(u, -1);
+                });
+                code.move_into(u, &[(quotient, 1)]);
+            }
+        });
+        code.repeat(more, |code| {
+            code.add(more, -1);
+            code.clear(t);
+            code.clear(x);
+            code.move_into(divisor, &[(x, 1), (t, 1)]);
+            code.move_into(t, &[(divisor, 1)]);
+            code.add_with_carry(x, low, high, temporaries);
+            code.clear(flag);
+        });
+    });
+    code.text
+}
+
 /// Random program biased towards loop idioms the optimizer recognizes.
 fn generate(rng: &mut Rng, depth: usize, out: &mut String) {
     for _ in 0..=rng.below(8) {
@@ -236,6 +378,75 @@ fn optimized_matches_reference() {
             checked += 1;
         }
     }
+}
+
+#[test]
+fn divide_loop_is_accelerated() {
+    let program = |quirk| format!(",>,>,>,>,<<<<{}>.>.>.>.", divide_loop(quirk));
+    let ast = AstNode::parse(&program(false), false).unwrap();
+    assert!(format!("{ast:?}").contains("DivMod"), "{ast:?}");
+
+    // Random cell values almost never divide by 200, but the proof notices.
+    let ast = AstNode::parse(&program(true), false).unwrap();
+    assert!(!format!("{ast:?}").contains("DivMod"), "{ast:?}");
+    let program = format!("{}{}", ">".repeat(START), program(true));
+    assert!(check(&program, &[1, 100, 2, 200, 0], 100_000_000));
+}
+
+#[test]
+fn divide_loop_edge_cases() {
+    let values = [0, 1, 2, 3, 7, 127, 128, 200, 254, 255];
+    let program = format!(
+        "{},>,>,>,>,<<<<{}>.>.>.>.",
+        ">".repeat(START),
+        divide_loop(false)
+    );
+    let observable = AstNode::parse(&program, false).unwrap();
+    let ast = AstNode::parse_keeping_tape(&program).unwrap();
+
+    let mut checked = 0;
+    for flag in [0, 1, 9] {
+        for low in values {
+            for high in values {
+                for divisor in values {
+                    let input = [flag, low, high, divisor, 100];
+                    let dividend = u16::from_le_bytes([low, high]);
+                    let (remainder, quotient) = if flag == 0 || divisor == 0 {
+                        (dividend, 0)
+                    } else {
+                        let divisor = u16::from(divisor);
+                        (dividend % divisor, dividend / divisor)
+                    };
+                    let [low, high] = remainder.to_le_bytes();
+                    let counter = quotient.to_le_bytes()[0].wrapping_add(100);
+                    let expected = vec![low, high, divisor, counter];
+
+                    assert_eq!(
+                        interpret(observable.clone(), &input).1,
+                        expected,
+                        "interpreter: {input:?}"
+                    );
+                    let tape = interpret(ast.clone(), &input).0;
+                    #[cfg(feature = "jit")]
+                    {
+                        assert_eq!(
+                            jit(observable.clone(), &input).1,
+                            expected,
+                            "jit: {input:?}"
+                        );
+                        assert_eq!(jit(ast.clone(), &input).0, tape, "jit tape: {input:?}");
+                    }
+
+                    // The reference is too slow for big numbers.
+                    if let Some((expected, _)) = reference(program.as_bytes(), &input, 1_000_000) {
+                        assert_eq!(tape, expected, "tape: {input:?}");
+                        checked += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert!(checked > 100, "{checked}");
 }
 
 #[test]

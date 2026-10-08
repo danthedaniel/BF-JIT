@@ -606,6 +606,63 @@ fn product_add(
     multiply_add(bytes, ADDR, rd, value);
 }
 
+/// Load the little-endian number in `len` cells from `start` into x`rd`,
+/// using x8 as a temporary.
+fn load_number(bytes: &mut Vec<u8>, rd: u32, start: i32, len: u8) {
+    let len = i32::from(len);
+    load_byte(bytes, rd, start + len - 1);
+    for i in (0..len - 1).rev() {
+        load_byte(bytes, TMP, start + i);
+        // orr xd, x8, xd, lsl #8
+        emit_u32(bytes, 0xaa00_2000 | (rd << 16) | (TMP << 5) | rd);
+    }
+}
+
+pub fn div_mod(bytes: &mut Vec<u8>, node: &AstNode) {
+    let AstNode::DivMod {
+        dividend,
+        dividend_len,
+        divisor,
+        divisor_len,
+        quotient,
+        factor,
+    } = *node
+    else {
+        unreachable!("not a division: {node:?}");
+    };
+
+    // x0 = dividend, then remainder; x1 = divisor; x2 = quotient
+    load_number(bytes, 1, divisor, divisor_len);
+
+    let mut divide = Vec::new();
+    load_number(&mut divide, 0, dividend, dividend_len);
+    // udiv x2, x0, x1
+    emit_u32(&mut divide, 0x9ac0_0800 | (1 << 16) | 2);
+    // msub x0, x2, x1, x0
+    emit_u32(&mut divide, 0x9b00_8000 | (1 << 16) | (2 << 5));
+    for i in 0..i32::from(dividend_len) {
+        store_byte(&mut divide, 0, dividend + i);
+        // lsr x0, x0, #8
+        emit_u32(&mut divide, 0xd348_fc00);
+    }
+    if factor != 0 {
+        load_byte(&mut divide, 3, quotient);
+        // movz w4, #factor
+        emit_u32(&mut divide, 0x5280_0000 | (u32::from(factor) << 5) | 4);
+        // madd w3, w2, w4, w3
+        emit_u32(
+            &mut divide,
+            0x1b00_0000 | (4 << 16) | (3 << 10) | (2 << 5) | 3,
+        );
+        store_byte(&mut divide, 3, quotient);
+    }
+
+    // cbz x1, over the division
+    let skip = i32::try_from(divide.len() / 4).unwrap() + 1;
+    emit_u32(bytes, 0xb400_0000 | (bits(skip, 19) << 5) | 1);
+    bytes.extend(divide);
+}
+
 /// Add a value to x19.
 fn add_to_pointer(bytes: &mut Vec<u8>, amount: i32) {
     if (0..4096).contains(&amount) {

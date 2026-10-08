@@ -6,6 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use super::accelerate::accelerate;
 use super::{AstNode, Operand};
 
 /// Runs longer than this are flushed before looking into a loop, to keep
@@ -1054,7 +1055,19 @@ fn optimize_loop(body: Vec<Raw>, summary: &Summary, entry: &Known, exit: &Live) 
         return OptimizedLoop::Node(AstNode::Scan(stride));
     }
 
-    solve_loop(&body, entry, exit, &live).unwrap_or(OptimizedLoop::Node(AstNode::Loop(body)))
+    if let Some(solved) = solve_loop(&body, entry, exit, &live) {
+        return solved;
+    }
+
+    // Perform all iterations but the last at once, if possible.
+    match accelerate(&body) {
+        Some(node) => {
+            let mut accelerated = vec![node];
+            accelerated.extend(body);
+            OptimizedLoop::Node(AstNode::Loop(accelerated))
+        }
+        None => OptimizedLoop::Node(AstNode::Loop(body)),
+    }
 }
 
 /// Computes the total effect of a loop which runs `iterations` times.

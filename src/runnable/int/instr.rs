@@ -27,6 +27,16 @@ pub enum Instr {
         dst: i32,
         value: u8,
     },
+    /// Divide a multi-byte number by another, keeping the remainder and
+    /// adding `factor` times the quotient to a cell.
+    DivMod {
+        dividend: i32,
+        dividend_len: u8,
+        divisor: i32,
+        divisor_len: u8,
+        quotient: i32,
+        factor: u8,
+    },
     /// Shift the data pointer.
     Move(i32),
     /// Display a memory cell as an ASCII character.

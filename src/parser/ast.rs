@@ -5,7 +5,7 @@ use super::optimizer::optimize;
 /// brainfuck AST node
 ///
 /// All offsets are relative to the data pointer.
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum AstNode {
     /// Add to a memory cell (wrapping).
     Add(i32, u8),
@@ -30,6 +30,18 @@ pub enum AstNode {
         dst: i32,
         value: u8,
     },
+    /// Divide the little-endian number in the `dividend_len` cells from
+    /// `dividend` by the one in the `divisor_len` cells from `divisor`, unless
+    /// that is zero. The remainder replaces the dividend, and `factor` times
+    /// the quotient is added to the cell at `quotient`.
+    DivMod {
+        dividend: i32,
+        dividend_len: u8,
+        divisor: i32,
+        divisor_len: u8,
+        quotient: i32,
+        factor: u8,
+    },
     /// Shift the data pointer.
     Move(i32),
     /// Display a memory cell as an ASCII character.
@@ -47,7 +59,7 @@ pub enum AstNode {
 }
 
 /// The value `scale * cell + bias` (wrapping), or the constant `bias` if `scale` is 0.
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct Operand {
     pub cell: i32,
     pub scale: u8,
@@ -195,6 +207,24 @@ pub fn max_offset(nodes: &[AstNode]) -> u32 {
                 .map(i32::unsigned_abs)
                 .max()
                 .unwrap(),
+            AstNode::DivMod {
+                dividend,
+                dividend_len,
+                divisor,
+                divisor_len,
+                quotient,
+                ..
+            } => [
+                *dividend,
+                dividend + i32::from(*dividend_len) - 1,
+                *divisor,
+                divisor + i32::from(*divisor_len) - 1,
+                *quotient,
+            ]
+            .into_iter()
+            .map(i32::unsigned_abs)
+            .max()
+            .unwrap(),
             AstNode::Loop(body) => max_offset(body),
             AstNode::Move(_) | AstNode::Scan(_) | AstNode::Syscall => 0,
         })

@@ -1,3 +1,4 @@
+mod accelerate;
 mod ast;
 mod optimizer;
 
