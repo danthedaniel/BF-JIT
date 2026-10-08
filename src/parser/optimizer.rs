@@ -4,7 +4,8 @@
 //! effect are replaced by straight-line code, and straight-line code is
 //! symbolically executed and re-emitted with the minimum number of writes.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, VecDeque};
+use std::rc::Rc;
 
 use super::accelerate::accelerate;
 use super::{AstNode, Operand};
@@ -27,10 +28,120 @@ pub fn optimize(nodes: Vec<AstNode>, keep_tape: bool) -> Vec<AstNode> {
     optimize_block(annotate(nodes), Known::zeroed(), &live)
 }
 
+/// Maps switch to a tree rather than moving more cells than this to insert one.
+const MAX_INSERT_MOVES: usize = 4096;
+
+/// A map from cells to values, iterated in order of cell. The maps used while
+/// optimizing usually hold few cells and are created and cloned a lot, which
+/// a sorted vector is much cheaper for than a tree. Big ones which are
+/// inserted into anywhere but near the end switch to a tree, so inserting
+/// doesn't take quadratic time.
+#[derive(Clone)]
+enum CellMap<V> {
+    Small(Vec<(i32, V)>),
+    Large(BTreeMap<i32, V>),
+}
+
+impl<V> Default for CellMap<V> {
+    fn default() -> Self {
+        Self::Small(Vec::new())
+    }
+}
+
+impl<V> CellMap<V> {
+    fn get(&self, cell: i32) -> Option<&V> {
+        match self {
+            Self::Small(cells) => {
+                let index = cells.binary_search_by_key(&cell, |&(other, _)| other).ok()?;
+                Some(&cells[index].1)
+            }
+            Self::Large(cells) => cells.get(&cell),
+        }
+    }
+
+    fn insert(&mut self, cell: i32, value: V) {
+        let mut value = Some(value);
+        let slot = self.get_or_insert_with(cell, || value.take().unwrap());
+        if let Some(value) = value {
+            *slot = value;
+        }
+    }
+
+    /// The value of a cell, inserting `value()` if there is none.
+    fn get_or_insert_with(&mut self, cell: i32, value: impl FnOnce() -> V) -> &mut V {
+        let found = match self {
+            Self::Small(cells) => cells.binary_search_by_key(&cell, |&(other, _)| other),
+            Self::Large(_) => Ok(0),
+        };
+        if let (Self::Small(cells), Err(index)) = (&mut *self, found)
+            && cells.len() - index > MAX_INSERT_MOVES
+        {
+            *self = Self::Large(std::mem::take(cells).into_iter().collect());
+        }
+        match self {
+            Self::Small(cells) => {
+                let index = found.unwrap_or_else(|index| {
+                    cells.insert(index, (cell, value()));
+                    index
+                });
+                &mut cells[index].1
+            }
+            Self::Large(cells) => cells.entry(cell).or_insert_with(value),
+        }
+    }
+
+    fn iter(&self) -> CellIter<'_, V> {
+        match self {
+            Self::Small(cells) => CellIter::Small(cells.iter()),
+            Self::Large(cells) => CellIter::Large(cells.iter()),
+        }
+    }
+
+    fn keys(&self) -> impl Iterator<Item = i32> {
+        self.iter().map(|(cell, _)| cell)
+    }
+
+    /// Subtract `amount` from every cell, keeping those for which `keep`
+    /// returns true.
+    fn shift(&mut self, amount: i32, keep: impl Fn(i32) -> bool) {
+        match self {
+            // Shifting every cell by the same amount keeps them sorted.
+            Self::Small(cells) => cells.retain_mut(|(cell, _)| {
+                *cell -= amount;
+                keep(*cell)
+            }),
+            Self::Large(cells) => {
+                *cells = std::mem::take(cells)
+                    .into_iter()
+                    .map(|(cell, value)| (cell - amount, value))
+                    .filter(|&(cell, _)| keep(cell))
+                    .collect();
+            }
+        }
+    }
+}
+
+/// Iterator over the cells of a `CellMap` and their values.
+enum CellIter<'a, V> {
+    Small(std::slice::Iter<'a, (i32, V)>),
+    Large(std::collections::btree_map::Iter<'a, i32, V>),
+}
+
+impl<'a, V> Iterator for CellIter<'a, V> {
+    type Item = (i32, &'a V);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Small(cells) => cells.next().map(|(cell, value)| (*cell, value)),
+            Self::Large(cells) => cells.next().map(|(cell, value)| (*cell, value)),
+        }
+    }
+}
+
 /// Knowledge about cell values relative to some data pointer position.
 #[derive(Clone, Default)]
 struct Known {
-    values: BTreeMap<i32, Option<u8>>,
+    values: CellMap<Option<u8>>,
     /// Value of every cell not in `values`.
     default: Option<u8>,
 }
@@ -38,7 +149,7 @@ struct Known {
 impl Known {
     fn zeroed() -> Self {
         Self {
-            values: BTreeMap::new(),
+            values: CellMap::default(),
             default: Some(0),
         }
     }
@@ -46,66 +157,115 @@ impl Known {
     /// State at the exit of a loop: the current cell is zero.
     fn loop_exit() -> Self {
         Self {
-            values: BTreeMap::from([(0, Some(0))]),
+            values: CellMap::Small(vec![(0, Some(0))]),
             default: None,
         }
     }
 
     fn get(&self, offset: i32) -> Option<u8> {
-        self.values.get(&offset).copied().unwrap_or(self.default)
+        self.values.get(offset).copied().unwrap_or(self.default)
     }
 
     /// Re-base after the data pointer moved by `amount`. Forgets about
     /// distant cells to keep optimization fast.
     fn shift(&mut self, amount: i32) {
-        let keep = |offset: i32| self.default.is_some() || offset.abs() <= MAX_KNOWN_DISTANCE;
-        self.values = self
-            .values
-            .iter()
-            .map(|(offset, value)| (offset - amount, *value))
-            .filter(|(offset, _)| keep(*offset))
-            .collect();
+        let keep_all = self.default.is_some();
+        self.values.shift(amount, |offset| {
+            keep_all || offset.abs() <= MAX_KNOWN_DISTANCE
+        });
     }
 }
 
 /// The cells whose current value may be read later, relative to the data
 /// pointer.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 enum Live {
     All,
-    /// Cells `cell + shift` for each `cell` in the set. Shifting is lazy since
-    /// unoptimized code moves the pointer a lot.
-    Cells(BTreeSet<i32>, i32),
+    /// Cells `cell + shift` for each `cell` in the sorted deque. Shifting is
+    /// lazy since unoptimized code moves the pointer a lot. Not a tree since
+    /// these are cloned for every loop, and a deque since code often walks
+    /// the tape backwards, inserting at the front.
+    Cells(VecDeque<i32>, i32),
+}
+
+impl Clone for Live {
+    fn clone(&self) -> Self {
+        match self {
+            Self::All => Self::All,
+            Self::Cells(cells, shift) => {
+                // Copying the cells in bulk is much faster than cloning the
+                // deque, which copies them one by one.
+                let (front, back) = cells.as_slices();
+                let mut copy = Vec::with_capacity(cells.len());
+                copy.extend_from_slice(front);
+                copy.extend_from_slice(back);
+                Self::Cells(copy.into(), *shift)
+            }
+        }
+    }
 }
 
 impl Live {
-    fn none() -> Self {
-        Self::Cells(BTreeSet::new(), 0)
+    const fn none() -> Self {
+        Self::Cells(VecDeque::new(), 0)
     }
 
     fn contains(&self, offset: i32) -> bool {
         match self {
             Self::All => true,
-            Self::Cells(cells, shift) => cells.contains(&(offset - shift)),
+            Self::Cells(cells, shift) => cells.binary_search(&(offset - shift)).is_ok(),
         }
     }
 
     fn insert(&mut self, offset: i32) {
-        if let Self::Cells(cells, shift) = self {
-            cells.insert(offset - *shift);
+        if let Self::Cells(cells, shift) = self
+            && let Err(index) = cells.binary_search(&(offset - *shift))
+        {
+            cells.insert(index, offset - *shift);
         }
     }
 
     fn remove(&mut self, offset: i32) {
-        if let Self::Cells(cells, shift) = self {
-            cells.remove(&(offset - *shift));
+        if let Self::Cells(cells, shift) = self
+            && let Ok(index) = cells.binary_search(&(offset - *shift))
+        {
+            cells.remove(index);
         }
     }
 
     fn union(&mut self, other: &Self) {
         match (&mut *self, other) {
             (Self::Cells(cells, shift), Self::Cells(others, other_shift)) => {
-                cells.extend(others.iter().map(|cell| cell + other_shift - *shift));
+                let delta = other_shift - *shift;
+                let added = others
+                    .iter()
+                    .filter(|&&cell| cells.binary_search(&(cell + delta)).is_err())
+                    .count();
+                if added == 0 {
+                    return;
+                }
+
+                // Merge from the back, so the cells only move once.
+                let mut kept = cells.len();
+                let mut others = others.iter().rev().map(|cell| cell + delta).peekable();
+                cells.resize(kept + added, 0);
+                let cells = cells.make_contiguous();
+                for index in (0..cells.len()).rev() {
+                    let Some(&other) = others.peek() else {
+                        // The remaining cells are already in place.
+                        break;
+                    };
+                    if kept > 0 && cells[kept - 1] >= other {
+                        if cells[kept - 1] == other {
+                            others.next();
+                        }
+                        kept -= 1;
+                        cells[index] = cells[kept];
+                    } else {
+                        others.next();
+                        cells[index] = other;
+                    }
+                }
             }
             _ => *self = Self::All,
         }
@@ -212,27 +372,28 @@ enum Atom {
     /// The value of a cell.
     Cell(i32),
     /// 1 if `lhs < rhs`, otherwise 0.
-    Less(Box<Expr>, Box<Expr>),
+    Less(Rc<Expr>, Rc<Expr>),
     /// A byte of `base + step * count`. The high byte is how often adding
     /// `step` to `base` `count` times wraps around.
     Product {
-        base: Box<Expr>,
-        step: Box<Expr>,
-        count: Box<Expr>,
+        base: Rc<Expr>,
+        step: Rc<Expr>,
+        count: Rc<Expr>,
         high: bool,
     },
 }
 
 impl Atom {
     /// The expressions this atom is computed from.
-    fn parts(&self) -> Vec<&Expr> {
-        match self {
-            Self::Cell(_) => Vec::new(),
-            Self::Less(lhs, rhs) => vec![lhs, rhs],
+    fn parts(&self) -> impl Iterator<Item = &Expr> {
+        let parts: [Option<&Expr>; 3] = match self {
+            Self::Cell(_) => [None, None, None],
+            Self::Less(lhs, rhs) => [Some(lhs), Some(rhs), None],
             Self::Product {
                 base, step, count, ..
-            } => vec![base, step, count],
-        }
+            } => [Some(base), Some(step), Some(count)],
+        };
+        parts.into_iter().flatten()
     }
 }
 
@@ -240,14 +401,125 @@ impl Atom {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Expr {
     constant: u8,
-    terms: BTreeMap<Atom, u8>,
+    terms: Terms,
+}
+
+/// Atoms with non-zero coefficients, sorted by atom. Expressions rarely have
+/// more than a few terms, so a vector is much cheaper than a map, and most
+/// have at most one, which is kept inline.
+#[derive(Clone, Debug, Default)]
+enum Terms {
+    #[default]
+    None,
+    One((Atom, u8)),
+    Many(Vec<(Atom, u8)>),
+}
+
+impl Terms {
+    fn as_slice(&self) -> &[(Atom, u8)] {
+        match self {
+            Self::None => &[],
+            Self::One(term) => std::slice::from_ref(term),
+            Self::Many(terms) => terms,
+        }
+    }
+
+    fn get(&self, atom: &Atom) -> Option<&u8> {
+        let terms = self.as_slice();
+        let index = terms.binary_search_by(|(other, _)| other.cmp(atom)).ok()?;
+        Some(&terms[index].1)
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (&Atom, &u8)> {
+        self.into_iter()
+    }
+
+    fn keys(&self) -> impl Iterator<Item = &Atom> {
+        self.as_slice().iter().map(|(atom, _)| atom)
+    }
+
+    fn len(&self) -> usize {
+        self.as_slice().len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.as_slice().is_empty()
+    }
+
+    fn add(&mut self, atom: Atom, coefficient: u8) {
+        if coefficient == 0 {
+            return;
+        }
+        match self {
+            Self::None => *self = Self::One((atom, coefficient)),
+            Self::One((other, entry)) if *other == atom => {
+                *entry = entry.wrapping_add(coefficient);
+                if *entry == 0 {
+                    *self = Self::None;
+                }
+            }
+            Self::One(_) => {
+                let Self::One(term) = std::mem::take(self) else {
+                    unreachable!()
+                };
+                let mut terms = vec![term, (atom, coefficient)];
+                terms.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
+                *self = Self::Many(terms);
+            }
+            Self::Many(terms) => match terms.binary_search_by(|(other, _)| other.cmp(&atom)) {
+                Ok(index) => {
+                    let entry = &mut terms[index].1;
+                    *entry = entry.wrapping_add(coefficient);
+                    if *entry == 0 {
+                        terms.remove(index);
+                    }
+                }
+                Err(index) => terms.insert(index, (atom, coefficient)),
+            },
+        }
+    }
+}
+
+// Terms are compared as sorted lists, however they're stored.
+impl PartialEq for Terms {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_slice() == other.as_slice()
+    }
+}
+
+impl Eq for Terms {}
+
+impl PartialOrd for Terms {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Terms {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.as_slice().cmp(other.as_slice())
+    }
+}
+
+impl<'a> IntoIterator for &'a Terms {
+    type Item = (&'a Atom, &'a u8);
+    type IntoIter = std::iter::Map<
+        std::slice::Iter<'a, (Atom, u8)>,
+        fn(&'a (Atom, u8)) -> (&'a Atom, &'a u8),
+    >;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.as_slice()
+            .iter()
+            .map(|(atom, coefficient)| (atom, coefficient))
+    }
 }
 
 impl Expr {
-    fn constant(value: u8) -> Self {
+    const fn constant(value: u8) -> Self {
         Self {
             constant: value,
-            terms: BTreeMap::new(),
+            terms: Terms::None,
         }
     }
 
@@ -258,7 +530,7 @@ impl Expr {
     fn atom(atom: Atom) -> Self {
         Self {
             constant: 0,
-            terms: BTreeMap::from([(atom, 1)]),
+            terms: Terms::One((atom, 1)),
         }
     }
 
@@ -276,7 +548,7 @@ impl Expr {
             (Some(l), Some(r)) => Self::constant(u8::from(l < r)),
             // Nothing is below 0 or above 255.
             (_, Some(0)) | (Some(u8::MAX), _) => Self::constant(0),
-            _ => Self::atom(Atom::Less(Box::new(lhs), Box::new(rhs))),
+            _ => Self::atom(Atom::Less(Rc::new(lhs), Rc::new(rhs))),
         }
     }
 
@@ -301,12 +573,17 @@ impl Expr {
                 expr
             }
             _ => Self::atom(Atom::Product {
-                base: Box::new(base),
-                step: Box::new(step),
-                count: Box::new(count),
+                base: Rc::new(base),
+                step: Rc::new(step),
+                count: Rc::new(count),
                 high,
             }),
         }
+    }
+
+    /// Whether this expression is just `atom`.
+    fn is_atom(&self, atom: &Atom) -> bool {
+        self.constant == 0 && matches!(self.terms.as_slice(), [(other, 1)] if other == atom)
     }
 
     fn as_constant(&self) -> Option<u8> {
@@ -315,9 +592,9 @@ impl Expr {
 
     /// This expression as an operand, if it depends on at most one cell.
     fn as_operand(&self) -> Option<Operand> {
-        match self.terms.iter().collect::<Vec<_>>()[..] {
+        match *self.terms.as_slice() {
             [] => Some(Operand::constant(self.constant)),
-            [(&Atom::Cell(cell), &scale)] => Some(Operand {
+            [(Atom::Cell(cell), scale)] => Some(Operand {
                 cell,
                 scale,
                 bias: self.constant,
@@ -328,19 +605,15 @@ impl Expr {
 
     /// Whether this expression is always 0 or 1.
     fn is_boolean(&self) -> bool {
-        match self.terms.iter().collect::<Vec<_>>()[..] {
+        match *self.terms.as_slice() {
             [] => self.constant <= 1,
-            [(Atom::Less(..), &k)] => matches!((k, self.constant), (1, 0) | (u8::MAX, 1)),
+            [(Atom::Less(..), k)] => matches!((k, self.constant), (1, 0) | (u8::MAX, 1)),
             _ => false,
         }
     }
 
     fn add_term(&mut self, atom: Atom, coefficient: u8) {
-        let entry = self.terms.entry(atom).or_insert(0);
-        *entry = entry.wrapping_add(coefficient);
-        if *entry == 0 {
-            self.terms.retain(|_, coefficient| *coefficient != 0);
-        }
+        self.terms.add(atom, coefficient);
     }
 
     fn add_scaled(&mut self, other: &Self, factor: u8) {
@@ -365,13 +638,11 @@ impl Expr {
         expr
     }
 
-    /// Collect the cells read by this expression.
-    fn reads(&self, cells: &mut BTreeSet<i32>) {
+    /// Collect the cells read by this expression, possibly more than once.
+    fn reads(&self, cells: &mut Vec<i32>) {
         for atom in self.terms.keys() {
             match atom {
-                Atom::Cell(offset) => {
-                    cells.insert(*offset);
-                }
+                Atom::Cell(offset) => cells.push(*offset),
                 atom => {
                     for part in atom.parts() {
                         part.reads(cells);
@@ -385,14 +656,15 @@ impl Expr {
     fn size(&self) -> usize {
         self.terms
             .keys()
-            .map(|atom| 1 + atom.parts().iter().map(|part| part.size()).sum::<usize>())
+            .map(|atom| 1 + atom.parts().map(Expr::size).sum::<usize>())
             .sum()
     }
 
     fn reads_cell(&self, offset: i32) -> bool {
-        let mut cells = BTreeSet::new();
-        self.reads(&mut cells);
-        cells.contains(&offset)
+        self.terms.keys().any(|atom| match atom {
+            Atom::Cell(cell) => *cell == offset,
+            atom => atom.parts().any(|part| part.reads_cell(offset)),
+        })
     }
 
     /// Replace cells with known values by constants.
@@ -423,16 +695,17 @@ impl Expr {
 }
 
 /// Symbolic execution of a straight-line run of nodes.
+#[derive(Default)]
 struct Affine {
     known: Known,
-    exprs: BTreeMap<i32, Expr>,
+    exprs: CellMap<Expr>,
 }
 
 impl Affine {
     fn new(known: Known) -> Self {
         Self {
             known,
-            exprs: BTreeMap::new(),
+            exprs: CellMap::default(),
         }
     }
 
@@ -444,7 +717,7 @@ impl Affine {
 
     fn get(&self, offset: i32) -> Expr {
         self.exprs
-            .get(&offset)
+            .get(offset)
             .cloned()
             .unwrap_or_else(|| self.initial(offset))
     }
@@ -453,13 +726,12 @@ impl Affine {
     fn get_mut(&mut self, offset: i32) -> &mut Expr {
         let initial = self.known.get(offset);
         self.exprs
-            .entry(offset)
-            .or_insert_with(|| initial.map_or_else(|| Expr::cell(offset), Expr::constant))
+            .get_or_insert_with(offset, || initial.map_or_else(|| Expr::cell(offset), Expr::constant))
     }
 
     /// Whether an expression is the initial value of a cell.
-    fn is_initial(&self, offset: i32, expr: &Expr) -> bool {
-        match self.known.get(offset) {
+    fn is_initial(known: &Known, offset: i32, expr: &Expr) -> bool {
+        match known.get(offset) {
             Some(value) => expr.as_constant() == Some(value),
             None => {
                 expr.constant == 0
@@ -494,7 +766,7 @@ impl Affine {
         };
         let size: usize = cells
             .into_iter()
-            .filter_map(|cell| self.exprs.get(&cell))
+            .filter_map(|cell| self.exprs.get(cell))
             .map(Expr::size)
             .sum();
         size > MAX_EXPR_SIZE
@@ -546,8 +818,7 @@ impl Affine {
     fn changed(&self) -> impl Iterator<Item = (i32, &Expr)> {
         self.exprs
             .iter()
-            .filter(|&(&offset, expr)| !self.is_initial(offset, expr))
-            .map(|(&offset, expr)| (offset, expr))
+            .filter(|&(offset, expr)| !Self::is_initial(&self.known, offset, expr))
     }
 
     /// Knowledge about cells after this block.
@@ -559,32 +830,50 @@ impl Affine {
         known
     }
 
+    /// Knowledge about cells after this block, without copying what's known
+    /// at its start.
+    fn into_known_after(self) -> Known {
+        let Self { mut known, exprs } = self;
+        for (offset, expr) in exprs.iter() {
+            if !Self::is_initial(&known, offset, expr) {
+                known.values.insert(offset, expr.as_constant());
+            }
+        }
+        known
+    }
+
     /// Emit an equivalent sequence of nodes, or `None` if that isn't possible.
     /// Only cells in `live` need their final value.
     fn lower(&self, live: &Live) -> Option<Vec<AstNode>> {
-        let changed: BTreeMap<i32, &Expr> = self
+        // Blocks are small, so sorted vectors are used rather than maps.
+        let changed: Vec<(i32, &Expr)> = self
             .changed()
             .filter(|&(offset, _)| live.contains(offset))
             .collect();
+        let is_changed =
+            |offset: i32| changed.binary_search_by_key(&offset, |&(cell, _)| cell).is_ok();
 
-        let mut read = BTreeSet::new();
-        for expr in changed.values() {
+        let mut read = Vec::new();
+        for (_, expr) in &changed {
             expr.reads(&mut read);
         }
+        read.sort_unstable();
+        read.dedup();
 
         // Cells can hold temporary values if their initial value isn't
         // needed and they end up holding a constant (which is written
         // afterwards), or they're dead. So can cells the block touches without
         // changing them, if their value is known and restored.
-        let scratch: BTreeMap<i32, Option<u8>> = self
+        let scratch: Vec<(i32, Option<u8>)> = self
             .exprs
             .keys()
-            .filter(|&&offset| !read.contains(&offset))
-            .filter_map(|&offset| {
-                let restore = match changed.get(&offset) {
+            .filter(|offset| read.binary_search(offset).is_err())
+            .filter_map(|offset| {
+                let index = changed.binary_search_by_key(&offset, |&(cell, _)| cell);
+                let restore = match index {
                     _ if !live.contains(offset) => None,
-                    Some(expr) => Some(expr.as_constant()?),
-                    None => Some(self.known.get(offset)?),
+                    Ok(index) => Some(changed[index].1.as_constant()?),
+                    Err(_) => Some(self.known.get(offset)?),
                 };
                 Some((offset, restore))
             })
@@ -592,14 +881,19 @@ impl Affine {
 
         let writes = changed
             .iter()
-            .filter(|(offset, _)| !scratch.contains_key(offset))
-            .map(|(&offset, &expr)| (offset, expr.clone()))
+            .filter(|(offset, _)| {
+                scratch
+                    .binary_search_by_key(offset, |&(cell, _)| cell)
+                    .is_err()
+            })
+            .copied()
             .collect();
-        let (mut output, used) = Schedule::new(writes, scratch.keys().copied().collect()).run()?;
+        let free = scratch.iter().map(|&(offset, _)| offset).collect();
+        let (mut output, used) = Schedule::new(writes, free).run()?;
 
         for (offset, restore) in scratch {
             if let Some(value) = restore
-                && (changed.contains_key(&offset) || used.contains(&offset))
+                && (is_changed(offset) || used.contains(&offset))
             {
                 output.push(AstNode::Set(offset, value));
             }
@@ -608,81 +902,110 @@ impl Affine {
     }
 }
 
-/// Something to compute while lowering a block. Writes order first since
-/// they're preferred: they free up temporaries.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Task {
-    /// Write the final value of a cell.
-    Write(i32),
-    /// Compute a shared sub-expression into a temporary cell.
-    Temporary(usize),
-}
-
 /// Orders the computations of a block such that every cell's initial value is
 /// read before it's overwritten. Sub-expressions which can't be expressed as
 /// an operand are computed once into temporary cells.
-struct Schedule {
+///
+/// The tasks are writing the final value of each cell in `writes`, followed
+/// by computing each temporary. Writes come first since they're preferred:
+/// they free up temporaries.
+struct Schedule<'a> {
     output: Vec<AstNode>,
-    writes: BTreeMap<i32, Expr>,
-    temporaries: Vec<Expr>,
-    /// Cell holding each computed temporary
-    computed: BTreeMap<Expr, i32>,
+    /// Final value of each cell, sorted by cell
+    writes: Vec<(i32, &'a Expr)>,
+    temporaries: Vec<&'a Expr>,
+    /// Cell holding each temporary, once it's computed
+    computed: Vec<Option<i32>>,
     /// Cells available for temporary values
     free: Vec<i32>,
     /// Cells whose initial value is read by each task
-    reads: BTreeMap<Task, BTreeSet<i32>>,
-    /// Temporaries each task uses
-    uses: BTreeMap<Task, BTreeSet<usize>>,
-    /// Number of pending tasks reading each cell's initial value
-    readers: BTreeMap<i32, usize>,
+    reads: Vec<Vec<i32>>,
+    /// Temporaries each task uses, in ascending order
+    uses: Vec<Vec<usize>>,
+    /// Number of pending tasks reading each cell's initial value, sorted by
+    /// cell
+    readers: Vec<(i32, usize)>,
     /// Number of pending tasks using each temporary
     users: Vec<usize>,
 }
 
-impl Schedule {
-    fn new(writes: BTreeMap<i32, Expr>, free: Vec<i32>) -> Self {
+impl<'a> Schedule<'a> {
+    fn new(writes: Vec<(i32, &'a Expr)>, free: Vec<i32>) -> Self {
         let mut schedule = Self {
             output: Vec::new(),
-            writes: BTreeMap::new(),
+            writes,
             temporaries: Vec::new(),
-            computed: BTreeMap::new(),
+            computed: Vec::new(),
             free,
-            reads: BTreeMap::new(),
-            uses: BTreeMap::new(),
-            readers: BTreeMap::new(),
+            reads: Vec::new(),
+            uses: Vec::new(),
+            readers: Vec::new(),
             users: Vec::new(),
         };
 
-        for expr in writes.values() {
-            schedule.collect_temporaries(expr);
+        for index in 0..schedule.writes.len() {
+            schedule.collect_temporaries(schedule.writes[index].1);
         }
-        for (&offset, expr) in &writes {
-            schedule.add_task(Task::Write(offset), expr);
+        for index in 0..schedule.writes.len() {
+            let (offset, expr) = schedule.writes[index];
+            schedule.add_task(Some(offset), expr);
         }
-        for (index, expr) in schedule.temporaries.clone().iter().enumerate() {
-            schedule.add_task(Task::Temporary(index), expr);
+        for index in 0..schedule.temporaries.len() {
+            schedule.add_task(None, schedule.temporaries[index]);
         }
-        schedule.writes = writes;
 
-        for (task, cells) in &schedule.reads {
-            for cell in cells {
-                if *task != Task::Write(*cell) {
-                    *schedule.readers.entry(*cell).or_insert(0) += 1;
-                }
+        let mut read = Vec::new();
+        for (task, cells) in schedule.reads.iter().enumerate() {
+            read.extend(
+                cells
+                    .iter()
+                    .filter(|&&cell| schedule.written_by(task) != Some(cell)),
+            );
+        }
+        read.sort_unstable();
+        for cell in read {
+            match schedule.readers.last_mut() {
+                Some((last, count)) if *last == cell => *count += 1,
+                _ => schedule.readers.push((cell, 1)),
             }
         }
 
         schedule
     }
 
+    /// The cell a task writes the final value of, if it's a write.
+    fn written_by(&self, task: usize) -> Option<i32> {
+        self.writes.get(task).map(|&(offset, _)| offset)
+    }
+
+    /// The task writing the final value of a cell, if there is one.
+    fn write_task(&self, cell: i32) -> Option<usize> {
+        self.writes
+            .binary_search_by_key(&cell, |&(offset, _)| offset)
+            .ok()
+    }
+
+    /// Whether a task can run: the temporaries it uses are computed and, if
+    /// it overwrites a cell, nothing else needs the cell's initial value.
+    fn ready(&self, task: usize, missing: &[usize]) -> bool {
+        missing[task] == 0
+            && self.written_by(task).is_none_or(|offset| {
+                self.readers
+                    .binary_search_by_key(&offset, |&(cell, _)| cell)
+                    .map_or(0, |index| self.readers[index].1)
+                    == 0
+            })
+    }
+
     /// Find the sub-expressions which have to be computed into temporaries
     /// because they can't be expressed as operands.
-    fn collect_temporaries(&mut self, expr: &Expr) {
+    fn collect_temporaries(&mut self, expr: &'a Expr) {
         for atom in expr.terms.keys() {
             for part in atom.parts() {
-                if part.as_operand().is_none() && !self.temporaries.contains(part) {
+                if part.as_operand().is_none() && !self.temporaries.contains(&part) {
                     self.collect_temporaries(part);
-                    self.temporaries.push(part.clone());
+                    self.temporaries.push(part);
+                    self.computed.push(None);
                     self.users.push(0);
                 }
             }
@@ -691,38 +1014,38 @@ impl Schedule {
 
     /// The temporary holding the value of an atom, if there is one.
     fn temporary_for(&self, atom: &Atom) -> Option<usize> {
-        if self.temporaries.is_empty() {
-            return None;
-        }
-        let expr = Expr::atom(atom.clone());
-        self.temporaries.iter().position(|other| *other == expr)
+        self.temporaries.iter().position(|other| other.is_atom(atom))
     }
 
-    /// Record which cells and temporaries a task computing `expr` reads.
-    fn add_task(&mut self, task: Task, expr: &Expr) {
-        let mut reads = BTreeSet::new();
-        let mut uses = BTreeSet::new();
+    /// Record which cells and temporaries a task computing `expr` reads. The
+    /// task writes the final value of the cell `write`, or computes the next
+    /// temporary.
+    fn add_task(&mut self, write: Option<i32>, expr: &Expr) {
+        let mut reads = Vec::new();
+        let mut uses = Vec::new();
+        let computing = match write {
+            Some(_) => None,
+            None => Some(self.uses.len() - self.writes.len()),
+        };
 
         for atom in expr.terms.keys() {
             if let Some(temporary) = self.temporary_for(atom)
-                && task != Task::Temporary(temporary)
+                && computing != Some(temporary)
             {
-                uses.insert(temporary);
+                uses.push(temporary);
                 continue;
             }
             match atom {
-                Atom::Cell(offset) => {
-                    reads.insert(*offset);
-                }
+                Atom::Cell(offset) => reads.push(*offset),
                 atom => {
                     for part in atom.parts() {
                         if let Some(operand) = part.as_operand() {
                             reads.extend(operand.reads());
                         } else {
-                            uses.insert(
+                            uses.push(
                                 self.temporaries
                                     .iter()
-                                    .position(|other| other == part)
+                                    .position(|&other| other == part)
                                     .unwrap(),
                             );
                         }
@@ -731,89 +1054,84 @@ impl Schedule {
             }
         }
 
+        reads.sort_unstable();
+        reads.dedup();
+        uses.sort_unstable();
+        uses.dedup();
         for &temporary in &uses {
             self.users[temporary] += 1;
         }
-        self.reads.insert(task, reads);
-        self.uses.insert(task, uses);
+        self.reads.push(reads);
+        self.uses.push(uses);
     }
 
     /// Returns the nodes and the cells used for temporaries.
-    fn run(mut self) -> Option<(Vec<AstNode>, BTreeSet<i32>)> {
-        let mut used = BTreeSet::new();
+    fn run(mut self) -> Option<(Vec<AstNode>, Vec<i32>)> {
+        let mut used = Vec::new();
 
         // Number of temporaries each task uses which aren't computed yet
-        let mut missing: BTreeMap<Task, usize> = self
-            .uses
-            .iter()
-            .map(|(&task, uses)| (task, uses.len()))
-            .collect();
-        let mut dependents: Vec<Vec<Task>> = vec![Vec::new(); self.temporaries.len()];
-        for (&task, uses) in &self.uses {
+        let mut missing: Vec<usize> = self.uses.iter().map(Vec::len).collect();
+        let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); self.temporaries.len()];
+        for (task, uses) in self.uses.iter().enumerate() {
             for &temporary in uses {
                 dependents[temporary].push(task);
             }
         }
 
-        let ready =
-            |task: Task, missing: &BTreeMap<Task, usize>, readers: &BTreeMap<i32, usize>| {
-                missing[&task] == 0
-                    && match task {
-                        Task::Write(offset) => readers.get(&offset).copied().unwrap_or(0) == 0,
-                        Task::Temporary(_) => true,
-                    }
-            };
-
-        let mut queue: BTreeSet<Task> = self
-            .uses
-            .keys()
-            .copied()
-            .filter(|&task| ready(task, &missing, &self.readers))
+        // Tasks ready to run, in descending order so the first is popped.
+        let mut queue: Vec<usize> = (0..self.uses.len())
+            .rev()
+            .filter(|&task| self.ready(task, &missing))
             .collect();
+        let enqueue = |queue: &mut Vec<usize>, task: usize| {
+            if let Err(index) = queue.binary_search_by(|other| task.cmp(other)) {
+                queue.insert(index, task);
+            }
+        };
 
         let mut done = 0;
-        while let Some(task) = queue.pop_first() {
+        while let Some(task) = queue.pop() {
             done += 1;
 
-            match task {
-                Task::Write(offset) => {
-                    let expr = self.writes[&offset].clone();
-                    self.assign(offset, &expr, false)?;
-                }
-                Task::Temporary(index) => {
-                    let cell = self.free.pop()?;
-                    used.insert(cell);
-                    let expr = self.temporaries[index].clone();
-                    self.assign(cell, &expr, true)?;
-                    self.computed.insert(expr, cell);
+            if let Some(offset) = self.written_by(task) {
+                let expr = self.writes[task].1;
+                self.assign(offset, expr, false)?;
+            } else {
+                let index = task - self.writes.len();
+                let cell = self.free.pop()?;
+                used.push(cell);
+                self.assign(cell, self.temporaries[index], true)?;
+                self.computed[index] = Some(cell);
 
-                    for &dependent in &dependents[index] {
-                        let count = missing.get_mut(&dependent).unwrap();
-                        *count -= 1;
-                        if ready(dependent, &missing, &self.readers) {
-                            queue.insert(dependent);
-                        }
+                for &dependent in &dependents[index] {
+                    missing[dependent] -= 1;
+                    if self.ready(dependent, &missing) {
+                        enqueue(&mut queue, dependent);
                     }
                 }
             }
 
-            for &cell in &self.reads[&task] {
-                if task == Task::Write(cell) {
+            for index in 0..self.reads[task].len() {
+                let cell = self.reads[task][index];
+                if self.written_by(task) == Some(cell) {
                     continue;
                 }
-                if let Some(count) = self.readers.get_mut(&cell) {
-                    *count -= 1;
-                    let write = Task::Write(cell);
-                    if missing.contains_key(&write) && ready(write, &missing, &self.readers) {
-                        queue.insert(write);
+                if let Ok(reader) = self
+                    .readers
+                    .binary_search_by_key(&cell, |&(other, _)| other)
+                {
+                    self.readers[reader].1 -= 1;
+                    if let Some(write) = self.write_task(cell)
+                        && self.ready(write, &missing)
+                    {
+                        enqueue(&mut queue, write);
                     }
                 }
             }
-            for &temporary in &self.uses[&task] {
+            for &temporary in &self.uses[task] {
                 self.users[temporary] -= 1;
                 if self.users[temporary] == 0 {
-                    let cell = self.computed[&self.temporaries[temporary]];
-                    self.free.push(cell);
+                    self.free.push(self.computed[temporary].unwrap());
                 }
             }
         }
@@ -833,7 +1151,7 @@ impl Schedule {
             !scratch
                 && match atom {
                     Atom::Cell(offset) => *offset == dst,
-                    atom => atom.parts().iter().any(|part| part.reads_cell(dst)),
+                    atom => atom.parts().any(|part| part.reads_cell(dst)),
                 }
         };
 
@@ -876,11 +1194,9 @@ impl Schedule {
 
     /// Add `value * atom` to `dst`.
     fn term(&mut self, dst: i32, atom: &Atom, value: u8) -> Option<()> {
-        let computed = if self.computed.is_empty() {
-            None
-        } else {
-            self.computed.get(&Expr::atom(atom.clone())).copied()
-        };
+        let computed = self
+            .temporary_for(atom)
+            .and_then(|index| self.computed[index]);
         let node = match (atom, computed) {
             (_, Some(src)) if src != dst => AstNode::MulAdd {
                 src,
@@ -920,8 +1236,10 @@ impl Schedule {
     }
 
     fn operand(&self, expr: &Expr) -> Option<Operand> {
-        expr.as_operand()
-            .or_else(|| Some(Operand::cell(*self.computed.get(expr)?)))
+        expr.as_operand().or_else(|| {
+            let index = self.temporaries.iter().position(|&other| other == expr)?;
+            Some(Operand::cell(self.computed[index]?))
+        })
     }
 }
 
@@ -952,7 +1270,7 @@ fn lower_halves(nodes: &[AstNode], known: &Known, live: &Live) -> Vec<AstNode> {
         .lower(&Live::All)
         .unwrap_or_else(|| lower_halves(first, known, &Live::All));
 
-    let known = affine.known_after();
+    let known = affine.into_known_after();
     let mut affine = Affine::new(known.clone());
     for node in second {
         affine.apply(node);
@@ -984,7 +1302,7 @@ fn optimize_run(nodes: Vec<AstNode>, known: Known, live: &Live) -> (Vec<AstNode>
                 .lower(live)
                 .unwrap_or_else(|| lower_halves(straight, &affine.known, live)),
         );
-        *affine = Affine::new(affine.known_after());
+        *affine = Affine::new(std::mem::take(affine).into_known_after());
         straight.clear();
     };
 
@@ -1013,26 +1331,36 @@ fn optimize_run(nodes: Vec<AstNode>, known: Known, live: &Live) -> (Vec<AstNode>
     (output, affine.known)
 }
 
-/// The knowledge about cells after a run of straight-line, `Print` and `Read` nodes.
-fn known_after_run(nodes: &[AstNode], known: Known) -> Known {
-    let mut affine = Affine::new(known);
-    for node in nodes {
+/// The knowledge about cells after a run of straight-line, `Print` and `Read`
+/// nodes, updated as nodes are added to the run.
+struct KnownAfterRun(Affine);
+
+impl KnownAfterRun {
+    fn new(known: Known) -> Self {
+        Self(Affine::new(known))
+    }
+
+    fn push(&mut self, node: &AstNode) {
+        let affine = &mut self.0;
         match node {
             AstNode::Print(_) => {}
             AstNode::Read(offset) => {
-                let mut known = affine.known_after();
+                let mut known = std::mem::take(affine).into_known_after();
                 known.values.insert(*offset, None);
-                affine = Affine::new(known);
+                *affine = Affine::new(known);
             }
             _ => {
                 if affine.too_complex(node) {
-                    affine = Affine::new(affine.known_after());
+                    *affine = Affine::new(std::mem::take(affine).into_known_after());
                 }
                 affine.apply(node);
             }
         }
     }
-    affine.known_after()
+
+    fn get(&self) -> Known {
+        self.0.known_after()
+    }
 }
 
 /// Result of optimizing a loop.
@@ -1043,19 +1371,17 @@ enum OptimizedLoop {
 }
 
 /// Optimize the body of a loop and try to replace the loop with something
-/// cheaper. `entry` describes the cells when the loop is reached and `exit`
-/// the cells used after it.
-fn optimize_loop(body: Vec<Raw>, summary: &Summary, entry: &Known, exit: &Live) -> OptimizedLoop {
-    // The body's result is used by the next iteration or after the loop.
-    let mut live = exit.clone();
-    live.union(&summary.reads);
-    let body = optimize_block(body, Known::default(), &live);
+/// cheaper. `entry` describes the cells when the loop is reached, `exit` the
+/// cells used after it and `live` the cells used by the next iteration or
+/// after the loop.
+fn optimize_loop(body: Vec<Raw>, entry: &Known, exit: &Live, live: &Live) -> OptimizedLoop {
+    let body = optimize_block(body, Known::default(), live);
 
     if let [AstNode::Move(stride)] = body[..] {
         return OptimizedLoop::Node(AstNode::Scan(stride));
     }
 
-    if let Some(solved) = solve_loop(&body, entry, exit, &live) {
+    if let Some(solved) = solve_loop(&body, entry, exit, live) {
         return solved;
     }
 
@@ -1175,7 +1501,7 @@ impl Summation<'_> {
 
     /// Whether an expression has the same value in every iteration.
     fn invariant(&self, expr: &Expr) -> bool {
-        let mut cells = BTreeSet::new();
+        let mut cells = Vec::new();
         expr.reads(&mut cells);
         cells
             .into_iter()
@@ -1218,7 +1544,7 @@ fn solve_loop(body: &[AstNode], entry: &Known, exit: &Live, live: &Live) -> Opti
     // Cells set to a constant keep their value if the loop doesn't run. If
     // that value isn't known and is used later, the solution only applies if
     // the loop runs.
-    let guarded = affine.exprs.iter().any(|(&offset, expr)| {
+    let guarded = affine.exprs.iter().any(|(offset, expr)| {
         offset != 0
             && expr.as_constant().is_some()
             && entry.get(offset).is_none()
@@ -1232,7 +1558,7 @@ fn solve_loop(body: &[AstNode], entry: &Known, exit: &Live, live: &Live) -> Opti
         entry.clone()
     });
 
-    for (&offset, expr) in &affine.exprs {
+    for (offset, expr) in affine.exprs.iter() {
         let value = if !live.contains(offset) {
             // Unchanged, but available as scratch space.
             Expr::cell(offset)
@@ -1287,15 +1613,22 @@ fn optimize_block(nodes: Vec<Raw>, mut known: Known, live: &Live) -> Vec<AstNode
     let mut offset = 0;
     // Pending straight-line nodes, relative to the pointer before `offset`
     let mut run = Vec::new();
+    // The knowledge about cells after `run`
+    let mut after_run = KnownAfterRun::new(known.clone());
 
-    // The cells used after each loop, relative to its pointer.
-    let mut live_after_loops = Vec::new();
+    // The cells used after each loop, relative to its pointer. Also the
+    // cells used by the loop or after it, which is what the cells live
+    // before it are unless it's `[-]`.
+    let mut live_around_loops = Vec::new();
     let mut current = live.clone();
     for node in nodes.iter().rev() {
-        if matches!(node, Raw::Loop(..)) {
-            live_after_loops.push(current.clone());
-        }
+        let Raw::Loop(_, summary) = node else {
+            current = current.into_before(node);
+            continue;
+        };
+        let after = current.clone();
         current = current.into_before(node);
+        live_around_loops.push((after, (!summary.clear).then(|| current.clone())));
     }
 
     // `live` is relative to the pointer at the end of the run, which is
@@ -1322,19 +1655,27 @@ fn optimize_block(nodes: Vec<Raw>, mut known: Known, live: &Live) -> Vec<AstNode
         match node {
             Raw::Node(AstNode::Move(amount)) => offset += amount,
             Raw::Loop(body, summary) => {
-                let live_after = &live_after_loops.pop().unwrap();
-                let mut live_before = live_after.clone();
-                live_before.union(&summary.reads);
-                let live_before = &live_before;
+                let (live_after, live_before) = live_around_loops.pop().unwrap();
+                let live_before = &live_before.unwrap_or_else(|| {
+                    let mut live_before = live_after.clone();
+                    live_before.union(&summary.reads);
+                    live_before
+                });
+                let live_after = &live_after;
                 if run.len() > MAX_RUN {
                     flush_run(&mut run, &mut known, &mut output, live_before, offset);
+                    after_run = KnownAfterRun::new(known.clone());
                 }
-                let mut entry = known_after_run(&run, known.clone());
+                let mut entry = after_run.get();
                 entry.shift(offset);
 
-                match optimize_loop(body, &summary, &entry, live_after) {
+                match optimize_loop(body, &entry, live_after, live_before) {
                     OptimizedLoop::Inline(nodes) => {
-                        run.extend(nodes.iter().map(|node| shift(node, offset)));
+                        for node in nodes {
+                            let node = shift(&node, offset);
+                            after_run.push(&node);
+                            run.push(node);
+                        }
                     }
                     OptimizedLoop::Node(node) => {
                         // Skip loops which are statically known to never run.
@@ -1346,6 +1687,7 @@ fn optimize_block(nodes: Vec<Raw>, mut known: Known, live: &Live) -> Vec<AstNode
                         flush_move(&mut offset, &mut known, &mut output);
                         output.push(node);
                         known = Known::loop_exit();
+                        after_run = KnownAfterRun::new(known.clone());
                     }
                 }
             }
@@ -1354,8 +1696,13 @@ fn optimize_block(nodes: Vec<Raw>, mut known: Known, live: &Live) -> Vec<AstNode
                 flush_move(&mut offset, &mut known, &mut output);
                 output.push(AstNode::Syscall);
                 known = Known::default();
+                after_run = KnownAfterRun::new(known.clone());
             }
-            Raw::Node(node) => run.push(shift(&node, offset)),
+            Raw::Node(node) => {
+                let node = shift(&node, offset);
+                after_run.push(&node);
+                run.push(node);
+            }
         }
     }
 
@@ -1410,6 +1757,26 @@ fn shift(node: &AstNode, amount: i32) -> AstNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_union() {
+        let sets: [&[i32]; 5] = [&[], &[0], &[-3, 1, 2], &[-5, -3, 0, 2, 7], &[1, 2, 3, 4]];
+        for a in sets {
+            for b in sets {
+                for shift in -3..=3 {
+                    let mut live = Live::Cells(a.iter().copied().collect(), 0);
+                    live.union(&Live::Cells(b.iter().copied().collect(), shift));
+                    let mut expected: Vec<i32> = a.iter().chain(b).copied().collect();
+                    for cell in &mut expected[a.len()..] {
+                        *cell += shift;
+                    }
+                    expected.sort_unstable();
+                    expected.dedup();
+                    assert!(matches!(live, Live::Cells(cells, 0) if cells == expected));
+                }
+            }
+        }
+    }
 
     #[test]
     fn inverse_is_correct() {
