@@ -292,11 +292,26 @@ fn random_dst(rng: &mut Rng, cells: usize, in_loop: bool) -> i32 {
     }
 }
 
-/// A random straight-line node, or a byte addition with carry. Loop bodies
-/// don't write to the counter.
+/// A random straight-line node, a byte addition with carry, or a loop which
+/// only sets cells and runs at most once, between pointer movements. Loop
+/// bodies don't write to the counter.
 fn random_nodes(rng: &mut Rng, cells: usize, in_loop: bool) -> Vec<AstNode> {
     let dst = random_dst(rng, cells, in_loop);
     let value = [1, 255, random_byte(rng)][rng.below(3)];
+    if rng.below(5) == 0 {
+        // The counter and cells set are relative to the moved pointer.
+        let counter = random_dst(rng, cells, in_loop);
+        let mut body: Vec<_> = (0..rng.below(4))
+            .map(|_| AstNode::Set(random_dst(rng, cells, in_loop) - counter, random_byte(rng)))
+            .filter(|node| !matches!(node, AstNode::Set(0, _)))
+            .collect();
+        body.insert(rng.below(body.len() + 1), AstNode::Set(0, 0));
+        return vec![
+            AstNode::Move(counter),
+            AstNode::Loop(body),
+            AstNode::Move(-counter),
+        ];
+    }
     if rng.below(7) == 0 {
         let sum = random_dst(rng, cells, in_loop);
         let addend = random_cell(rng, cells);

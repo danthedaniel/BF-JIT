@@ -36,6 +36,7 @@ const CACHE_REGS: [u8; 9] = [RDX, RBX, RBP, RSI, RDI, R8, R9, R13, R14];
 // Condition codes
 const CC_B: u8 = 0x2;
 const CC_AE: u8 = 0x3;
+const CC_NE: u8 = 0x5;
 
 fn callee_save_to_stack(bytes: &mut Vec<u8>) {
     // push   rbx
@@ -360,13 +361,13 @@ struct CellCache {
 }
 
 impl CellCache {
-    /// A cache for compiling `nodes` in order, which evicts the cells needed
+    /// A cache for compiling `steps` in order, which evicts the cells needed
     /// furthest in the future when it runs out of registers.
-    fn new(nodes: &[AstNode]) -> Self {
+    fn new(steps: &[Step]) -> Self {
         let mut cache = Self::default();
-        for (position, node) in nodes.iter().enumerate() {
-            let read = !matches!(node, AstNode::Set(..));
-            for cell in accessed_cells(node) {
+        for (position, step) in steps.iter().enumerate() {
+            let read = !matches!(step, Step::Node(AstNode::Set(..)));
+            for cell in accessed_cells(step) {
                 cache
                     .accesses
                     .entry(cell)
@@ -653,33 +654,184 @@ impl CellCache {
         true
     }
 
-    /// Compile straight-line nodes in order.
-    fn compile(&mut self, bytes: &mut Vec<u8>, nodes: &[AstNode]) {
-        let mut position = 0;
-        while position < nodes.len() {
-            self.position = position;
-            if let Some(next) = nodes.get(position + 1)
-                && self.add_with_carry(bytes, &nodes[position], next)
-            {
-                position += 2;
-            } else {
-                self.node(bytes, &nodes[position]);
-                position += 1;
+    /// Set cells to constants if the counter isn't zero, without branching,
+    /// and then set the counter to zero.
+    fn set_if(&mut self, bytes: &mut Vec<u8>, counter: i32, sets: &[(i32, u8)]) {
+        match self.constant(counter) {
+            Some(0) => {}
+            Some(_) => {
+                for &(offset, value) in sets {
+                    self.set(offset, value);
+                }
             }
+            None => {
+                let mut regs = Vec::new();
+                for &(offset, value) in sets {
+                    if self.constant(offset) != Some(value) {
+                        regs.push((self.modify(bytes, offset), value));
+                    }
+                }
+                let counter = self.read(bytes, counter);
+                test_byte(bytes, counter);
+                for (reg, value) in regs {
+                    mov_imm(bytes, TMP, value);
+                    cmov(bytes, CC_NE, reg, TMP);
+                }
+            }
+        }
+        self.set(counter, 0);
+    }
+
+    /// Compile straight-line steps in order.
+    fn compile(&mut self, bytes: &mut Vec<u8>, steps: &[Step]) {
+        let mut position = 0;
+        while position < steps.len() {
+            self.position = position;
+            match (&steps[position], steps.get(position + 1)) {
+                (Step::Node(node), Some(Step::Node(next)))
+                    if self.add_with_carry(bytes, node, next) =>
+                {
+                    position += 1;
+                }
+                (Step::Node(node), _) => self.node(bytes, node),
+                (Step::SetIf { counter, sets }, _) => self.set_if(bytes, *counter, sets),
+            }
+            position += 1;
         }
     }
 }
 
-/// Compile a run of `Add`, `Set`, `MulAdd`, `CondAdd` and `ProductAdd` nodes.
-/// Cells are kept in registers and written back at the end.
-pub fn straight_line(bytes: &mut Vec<u8>, nodes: &[AstNode]) {
-    let mut cache = CellCache::new(nodes);
-    cache.compile(bytes, nodes);
-    cache.flush(bytes);
+/// A straight-line operation, with offsets relative to the data pointer at
+/// the start of its run.
+enum Step {
+    /// An `Add`, `Set`, `MulAdd`, `CondAdd` or `ProductAdd` node
+    Node(AstNode),
+    /// A loop which only sets cells, including its counter to 0, so it runs at
+    /// most once
+    SetIf { counter: i32, sets: Vec<(i32, u8)> },
 }
 
-/// The cells a straight-line node accesses.
-fn accessed_cells(node: &AstNode) -> Vec<i32> {
+/// The most cells (other than the counter) a loop compiled as a
+/// `Step::SetIf` may set.
+const MAX_SET_IF_CELLS: usize = 4;
+
+/// The cells (other than the counter) and values set by a loop which only sets
+/// cells and runs at most once.
+fn set_if_cells(body: &[AstNode]) -> Option<Vec<(i32, u8)>> {
+    let mut sets: Vec<(i32, u8)> = Vec::new();
+    for node in body {
+        let AstNode::Set(offset, value) = *node else {
+            return None;
+        };
+        sets.retain(|&(cell, _)| cell != offset);
+        sets.push((offset, value));
+    }
+    if !sets.contains(&(0, 0)) {
+        return None;
+    }
+    sets.retain(|&(cell, _)| cell != 0);
+    (sets.len() <= MAX_SET_IF_CELLS).then_some(sets)
+}
+
+/// Whether a node can be part of a run compiled by `straight_line`.
+pub fn is_straight_line(node: &AstNode) -> bool {
+    match node {
+        AstNode::Add(..)
+        | AstNode::Set(..)
+        | AstNode::MulAdd { .. }
+        | AstNode::CondAdd { .. }
+        | AstNode::ProductAdd { .. }
+        | AstNode::Move(_) => true,
+        AstNode::Loop(body) => set_if_cells(body).is_some(),
+        _ => false,
+    }
+}
+
+/// A straight-line node with its offsets moved by `amount`.
+fn shifted(node: &AstNode, amount: i32) -> AstNode {
+    match *node {
+        AstNode::Add(offset, value) => AstNode::Add(offset + amount, value),
+        AstNode::Set(offset, value) => AstNode::Set(offset + amount, value),
+        AstNode::MulAdd { src, dst, factor } => AstNode::MulAdd {
+            src: src + amount,
+            dst: dst + amount,
+            factor,
+        },
+        AstNode::CondAdd {
+            lhs,
+            rhs,
+            dst,
+            value,
+        } => AstNode::CondAdd {
+            lhs: lhs.shift(amount),
+            rhs: rhs.shift(amount),
+            dst: dst + amount,
+            value,
+        },
+        AstNode::ProductAdd {
+            base,
+            step,
+            count,
+            high,
+            dst,
+            value,
+        } => AstNode::ProductAdd {
+            base: base.shift(amount),
+            step: step.shift(amount),
+            count: count.shift(amount),
+            high,
+            dst: dst + amount,
+            value,
+        },
+        _ => unreachable!("not a straight-line node: {node:?}"),
+    }
+}
+
+/// Convert a run of straight-line nodes into steps relative to the data
+/// pointer at its start, returning them with the run's pointer movement.
+fn steps(nodes: &[AstNode]) -> (Vec<Step>, i32) {
+    let mut moved = 0;
+    let mut steps = Vec::new();
+    for node in nodes {
+        match node {
+            AstNode::Move(amount) => moved += amount,
+            AstNode::Loop(body) => steps.push(Step::SetIf {
+                counter: moved,
+                sets: set_if_cells(body)
+                    .unwrap()
+                    .into_iter()
+                    .map(|(offset, value)| (offset + moved, value))
+                    .collect(),
+            }),
+            node => steps.push(Step::Node(shifted(node, moved))),
+        }
+    }
+    (steps, moved)
+}
+
+/// Compile a run of nodes for which `is_straight_line` holds. Cells are kept
+/// in registers and written back at the end, and the data pointer is moved
+/// once.
+pub fn straight_line(bytes: &mut Vec<u8>, nodes: &[AstNode]) {
+    let (steps, moved) = steps(nodes);
+    let mut cache = CellCache::new(&steps);
+    cache.compile(bytes, &steps);
+    cache.flush(bytes);
+    if moved != 0 {
+        move_pointer(bytes, moved);
+    }
+}
+
+/// The cells a straight-line step accesses.
+fn accessed_cells(step: &Step) -> Vec<i32> {
+    let node = match step {
+        Step::Node(node) => node,
+        Step::SetIf { counter, sets } => {
+            return std::iter::once(*counter)
+                .chain(sets.iter().map(|&(offset, _)| offset))
+                .collect();
+        }
+    };
     match *node {
         AstNode::Add(offset, _) | AstNode::Set(offset, _) => vec![offset],
         AstNode::MulAdd { src, dst, .. } => vec![src, dst],
@@ -705,11 +857,15 @@ fn accessed_cells(node: &AstNode) -> Vec<i32> {
 }
 
 /// Compile a loop whose body is straight-line code which doesn't move the
-/// data pointer, keeping all cells in registers across iterations. Returns
-/// false if there are too many cells.
+/// data pointer overall, keeping all cells in registers across iterations.
+/// Returns false if there are too many cells.
 pub fn register_loop(bytes: &mut Vec<u8>, nodes: &[AstNode]) -> bool {
+    let (steps, moved) = steps(nodes);
+    if moved != 0 {
+        return false;
+    }
     let mut cells: Vec<i32> = std::iter::once(0)
-        .chain(nodes.iter().flat_map(accessed_cells))
+        .chain(steps.iter().flat_map(accessed_cells))
         .collect();
     cells.sort_unstable();
     cells.dedup();
@@ -725,7 +881,7 @@ pub fn register_loop(bytes: &mut Vec<u8>, nodes: &[AstNode]) -> bool {
     let counter = cache.read(&mut head, 0);
 
     let mut body = Vec::new();
-    cache.compile(&mut body, nodes);
+    cache.compile(&mut body, &steps);
     // A loop which sets its counter runs at most once (or forever), so loading
     // every cell up front doesn't pay off.
     if cache.constant(0).is_some() {

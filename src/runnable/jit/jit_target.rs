@@ -99,18 +99,16 @@ impl JITTarget {
         let mut nodes = nodes.into_iter().peekable();
 
         while let Some(node) = nodes.next() {
-            match node {
-                AstNode::Add(..)
-                | AstNode::Set(..)
-                | AstNode::MulAdd { .. }
-                | AstNode::CondAdd { .. }
-                | AstNode::ProductAdd { .. } => {
-                    let mut run = vec![node];
-                    while let Some(next) = nodes.next_if(Self::is_straight_line) {
-                        run.push(next);
-                    }
-                    code_gen::straight_line(&mut bytes, &run);
+            if code_gen::is_straight_line(&node) {
+                let mut run = vec![node];
+                while let Some(next) = nodes.next_if(code_gen::is_straight_line) {
+                    run.push(next);
                 }
+                code_gen::straight_line(&mut bytes, &run);
+                continue;
+            }
+
+            match node {
                 AstNode::Move(n) => code_gen::move_pointer(&mut bytes, n),
                 AstNode::Print(offset) => code_gen::print(&mut bytes, offset),
                 AstNode::Read(offset) => code_gen::read(&mut bytes, offset),
@@ -120,34 +118,26 @@ impl JITTarget {
                 }
                 AstNode::Loop(nodes) => bytes.extend(Self::defer_loop(nodes, context)),
                 AstNode::Syscall => code_gen::syscall(&mut bytes),
+                _ => unreachable!("straight-line node: {node:?}"),
             }
         }
 
         bytes
     }
 
-    const fn is_straight_line(node: &AstNode) -> bool {
-        matches!(
-            node,
-            AstNode::Add(..)
-                | AstNode::Set(..)
-                | AstNode::MulAdd { .. }
-                | AstNode::CondAdd { .. }
-                | AstNode::ProductAdd { .. }
-        )
-    }
-
     /// Perform AOT compilation on a loop.
     fn compile_loop(mut nodes: Vec<AstNode>, context: &Rc<RefCell<JITContext>>) -> Vec<u8> {
         let mut bytes = Vec::new();
 
-        if nodes.iter().all(Self::is_straight_line) && code_gen::register_loop(&mut bytes, &nodes) {
+        let straight_line = nodes.iter().all(code_gen::is_straight_line);
+        if straight_line && code_gen::register_loop(&mut bytes, &nodes) {
             return bytes;
         }
 
-        // Fold the pointer movement at the end of the body into the loop condition.
+        // Fold the pointer movement at the end of the body into the loop
+        // condition, unless it's part of the body's straight-line code.
         let trailing_move = match nodes.last() {
-            Some(&AstNode::Move(n)) => {
+            Some(&AstNode::Move(n)) if !straight_line => {
                 nodes.pop();
                 n
             }
