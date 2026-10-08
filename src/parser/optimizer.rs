@@ -1594,8 +1594,9 @@ fn optimize_block(nodes: Vec<Raw>, mut known: Known, live: &Live) -> Vec<AstNode
     // The knowledge about cells after `run`
     let mut after_run = KnownAfterRun::new(known.clone());
 
-    // The cells used after each loop, and those used by it or after it,
-    // relative to its pointer.
+    // The cells used after each loop, relative to its pointer. Also the
+    // cells used by the loop or after it, which is what the cells live
+    // before it are unless it's `[-]`.
     let mut live_around_loops = Vec::new();
     let mut current = live.clone();
     for node in nodes.iter().rev() {
@@ -1605,15 +1606,7 @@ fn optimize_block(nodes: Vec<Raw>, mut known: Known, live: &Live) -> Vec<AstNode
         };
         let after = current.clone();
         current = current.into_before(node);
-        let before = if summary.clear {
-            let mut before = after.clone();
-            before.union(&summary.reads);
-            before
-        } else {
-            // That's what the cells live before a loop are, unless it's `[-]`.
-            current.clone()
-        };
-        live_around_loops.push((after, before));
+        live_around_loops.push((after, (!summary.clear).then(|| current.clone())));
     }
 
     // `live` is relative to the pointer at the end of the run, which is
@@ -1639,8 +1632,14 @@ fn optimize_block(nodes: Vec<Raw>, mut known: Known, live: &Live) -> Vec<AstNode
     for node in nodes {
         match node {
             Raw::Node(AstNode::Move(amount)) => offset += amount,
-            Raw::Loop(body, _) => {
-                let (live_after, live_before) = &live_around_loops.pop().unwrap();
+            Raw::Loop(body, summary) => {
+                let (live_after, live_before) = live_around_loops.pop().unwrap();
+                let live_before = &live_before.unwrap_or_else(|| {
+                    let mut live_before = live_after.clone();
+                    live_before.union(&summary.reads);
+                    live_before
+                });
+                let live_after = &live_after;
                 if run.len() > MAX_RUN {
                     flush_run(&mut run, &mut known, &mut output, live_before, offset);
                     after_run = KnownAfterRun::new(known.clone());
