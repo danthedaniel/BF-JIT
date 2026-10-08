@@ -1059,11 +1059,20 @@ fn optimize_loop(body: Vec<Raw>, summary: &Summary, entry: &Known, exit: &Live) 
         return solved;
     }
 
-    // Perform all iterations but the last at once, if possible.
+    // Perform all iterations but the last at once, if possible. Then the loop
+    // runs once, and the last iteration only matters for cells used later.
     match accelerate(&body) {
-        Some(node) => {
-            let mut accelerated = vec![node];
-            accelerated.extend(body);
+        Some(acceleration) => {
+            let mut accelerated = vec![acceleration.node];
+            if acceleration
+                .last_changes
+                .iter()
+                .any(|&cell| exit.contains(cell))
+            {
+                accelerated.extend(body);
+            } else {
+                accelerated.push(AstNode::Set(0, 0));
+            }
             OptimizedLoop::Node(AstNode::Loop(accelerated))
         }
         None => OptimizedLoop::Node(AstNode::Loop(body)),

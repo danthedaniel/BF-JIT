@@ -36,20 +36,30 @@ const MAX_EXITS: usize = 4;
 thread_local! {
     /// Results for loop bodies seen before. Compiled programs repeat the same
     /// code a lot.
-    static CACHE: RefCell<HashMap<Vec<AstNode>, Option<AstNode>>> = RefCell::default();
+    static CACHE: RefCell<HashMap<Vec<AstNode>, Option<Acceleration>>> = RefCell::default();
 }
 
-/// Find a node which performs all iterations of a loop but the last one, so
-/// that it can be prepended to the loop body.
+/// A node performing all iterations of a loop but the last one, so that it
+/// can be prepended to the loop body.
+#[derive(Clone)]
+pub struct Acceleration {
+    pub node: AstNode,
+    /// The cells the last iteration may change, besides the current one,
+    /// which it clears. If they aren't used afterwards, the last iteration
+    /// can be replaced by clearing the current cell.
+    pub last_changes: BTreeSet<i32>,
+}
+
+/// Find a way to perform all iterations of a loop but the last at once.
 ///
 /// Either the loop has to divide: each iteration but the last subtracts a
 /// number held in cells it doesn't change from a number in other cells and
-/// adds a constant to a counter. It stopping when the first number is below the
+/// adds a constant to a counter. It stops when the first number is below the
 /// second, or when the second is zero.
 ///
 /// Or the loop has to count: each iteration but the last adds a constant to
-/// each cell it reads. It stopping when one of the cells reaches some value.
-pub fn accelerate(body: &[AstNode]) -> Option<AstNode> {
+/// each cell it reads. It stops when one of the cells reaches some value.
+pub fn accelerate(body: &[AstNode]) -> Option<Acceleration> {
     if size(body) > MAX_BODY {
         return None;
     }
@@ -62,8 +72,7 @@ pub fn accelerate(body: &[AstNode]) -> Option<AstNode> {
         let changes = constant_changes(&cells, &samples);
         guess(&cells, &samples, &changes)
             .into_iter()
-            .find(|division| prove(body, &cells, division))
-            .map(|division| division.node())
+            .find_map(|division| divide(body, &cells, &division))
             .or_else(|| count(body, &cells, &samples, &changes))
     });
     CACHE.with(|cache| cache.borrow_mut().insert(body.to_vec(), result.clone()));
@@ -414,11 +423,7 @@ fn guess(cells: &BTreeSet<i32>, samples: &[Sample], changes: &BTreeMap<i32, u8>)
 /// other cells it reads unchanged. Every other iteration has to end the loop.
 /// Then the last iteration doesn't depend on anything the others did but
 /// update the dividend and counter.
-fn prove(body: &[AstNode], cells: &BTreeSet<i32>, division: &Division) -> bool {
-    prove_division(body, cells, division).unwrap_or(false)
-}
-
-fn prove_division(body: &[AstNode], cells: &BTreeSet<i32>, division: &Division) -> Option<bool> {
+fn divide(body: &[AstNode], cells: &BTreeSet<i32>, division: &Division) -> Option<Acceleration> {
     let dividend: Vec<i32> =
         (division.dividend..division.dividend + division.dividend_len).collect();
     let divisor: Vec<i32> = (division.divisor..division.divisor + division.divisor_len).collect();
@@ -470,21 +475,22 @@ fn prove_division(body: &[AstNode], cells: &BTreeSet<i32>, division: &Division) 
     let divisor_nonzero = d.nonzero(&y)?;
     let not_below = d.not(below)?;
     let divides = d.and(divisor_nonzero, not_below)?;
+    let below_or_zero = d.not(divides)?;
     let mismatch = d.xor(again, divides)?;
     if d.and(runs, mismatch)? != FALSE {
-        return Some(false);
+        return None;
     }
 
     // When it does, the dividend decreases by the divisor.
     let condition = d.and(runs, divides)?;
     let (difference, _) = d.subtract(&x, &y)?;
     if !d.equal_given(condition, &number(&after, &dividend), &difference)? {
-        return Some(false);
+        return None;
     }
     if let Some((cell, step)) = division.counter {
         let (stepped, _) = d.add(&initial[&cell], &constant(step), FALSE)?;
         if !d.equal_given(condition, &after[&cell], &stepped)? {
-            return Some(false);
+            return None;
         }
     }
 
@@ -495,10 +501,15 @@ fn prove_division(body: &[AstNode], cells: &BTreeSet<i32>, division: &Division) 
             && Some(cell) != counter
             && !d.equal_given(condition, &after[&cell], &initial[&cell])?
         {
-            return Some(false);
+            return None;
         }
     }
-    Some(true)
+
+    let last = d.and(runs, below_or_zero)?;
+    Some(Acceleration {
+        node: division.node(),
+        last_changes: d.changes(last, &initial, &after)?,
+    })
 }
 
 /// Prove that a loop counts, and find out how far. `changes` are the
@@ -513,7 +524,7 @@ fn count(
     cells: &BTreeSet<i32>,
     samples: &[Sample],
     changes: &BTreeMap<i32, u8>,
-) -> Option<AstNode> {
+) -> Option<Acceleration> {
     // Cells which are read have to change by a constant, so give up early if
     // the samples show otherwise.
     if !sampled_reads(body, cells, samples)
@@ -594,7 +605,11 @@ fn count(
             return None;
         }
     }
-    Some(AstNode::Skip { exits, steps })
+    let last = d.and(runs, stopping)?;
+    Some(Acceleration {
+        node: AstNode::Skip { exits, steps },
+        last_changes: d.changes(last, &initial, &after)?,
+    })
 }
 
 /// One iteration of a loop body, symbolically executed.
@@ -900,6 +915,23 @@ impl Diagrams {
             .collect::<Option<Bits>>()?;
         let differ = self.nonzero(&differences)?;
         self.not(differ)
+    }
+
+    /// The cells other than the current one which may change when
+    /// `condition` holds.
+    fn changes(
+        &mut self,
+        condition: Bdd,
+        initial: &BTreeMap<i32, Bits>,
+        after: &BTreeMap<i32, Bits>,
+    ) -> Option<BTreeSet<i32>> {
+        let mut changes = BTreeSet::new();
+        for (&cell, bits) in after {
+            if cell != 0 && !self.equal_given(condition, bits, &initial[&cell])? {
+                changes.insert(cell);
+            }
+        }
+        Some(changes)
     }
 
     /// Whether two numbers are equal whenever `condition` holds.

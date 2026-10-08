@@ -413,7 +413,35 @@ fn optimized_matches_reference() {
 fn divide_loop_is_accelerated() {
     let program = |quirk| format!(",>,>,>,>,<<<<{}>.>.>.>.", divide_loop(quirk));
     let ast = AstNode::parse(&program(false), false).unwrap();
-    assert!(format!("{ast:?}").contains("DivMod"), "{ast:?}");
+    // The temporaries aren't used afterwards, so the last iteration isn't
+    // needed either.
+    assert!(
+        matches!(&ast[5], AstNode::Loop(body) if matches!(
+            body[..],
+            [AstNode::DivMod { .. }, AstNode::Set(0, 0)]
+        )),
+        "{ast:?}"
+    );
+
+    // Otherwise it's still run.
+    let program_using_temporary = format!(",>,>,>,>,<<<<{}>>>>>.", divide_loop(false));
+    let ast = AstNode::parse(&program_using_temporary, false).unwrap();
+    assert!(
+        matches!(&ast[5], AstNode::Loop(body) if matches!(
+            body[..],
+            [AstNode::DivMod { .. }, _, _, ..]
+        )),
+        "{ast:?}"
+    );
+    let program_using_temporary = format!("{}{program_using_temporary}", ">".repeat(START));
+    for input in [
+        [1, 10, 0, 3, 0],
+        [1, 0, 0, 0, 0],
+        [5, 2, 0, 3, 0],
+        [0, 9, 9, 9, 9],
+    ] {
+        assert!(check(&program_using_temporary, &input, 100_000_000));
+    }
 
     // Random cell values almost never divide by 200, but the proof notices.
     let ast = AstNode::parse(&program(true), false).unwrap();
