@@ -396,6 +396,11 @@ impl Expr {
         }
     }
 
+    /// Whether this expression is just `atom`.
+    fn is_atom(&self, atom: &Atom) -> bool {
+        self.constant == 0 && matches!(&self.terms.0[..], [(other, 1)] if other == atom)
+    }
+
     fn as_constant(&self) -> Option<u8> {
         self.terms.is_empty().then_some(self.constant)
     }
@@ -448,13 +453,11 @@ impl Expr {
         expr
     }
 
-    /// Collect the cells read by this expression.
-    fn reads(&self, cells: &mut BTreeSet<i32>) {
+    /// Collect the cells read by this expression, possibly more than once.
+    fn reads(&self, cells: &mut Vec<i32>) {
         for atom in self.terms.keys() {
             match atom {
-                Atom::Cell(offset) => {
-                    cells.insert(*offset);
-                }
+                Atom::Cell(offset) => cells.push(*offset),
                 atom => {
                     for part in atom.parts() {
                         part.reads(cells);
@@ -646,29 +649,35 @@ impl Affine {
     /// Emit an equivalent sequence of nodes, or `None` if that isn't possible.
     /// Only cells in `live` need their final value.
     fn lower(&self, live: &Live) -> Option<Vec<AstNode>> {
-        let changed: BTreeMap<i32, &Expr> = self
+        // Blocks are small, so sorted vectors are used rather than maps.
+        let changed: Vec<(i32, &Expr)> = self
             .changed()
             .filter(|&(offset, _)| live.contains(offset))
             .collect();
+        let is_changed =
+            |offset: i32| changed.binary_search_by_key(&offset, |&(cell, _)| cell).is_ok();
 
-        let mut read = BTreeSet::new();
-        for expr in changed.values() {
+        let mut read = Vec::new();
+        for (_, expr) in &changed {
             expr.reads(&mut read);
         }
+        read.sort_unstable();
+        read.dedup();
 
         // Cells can hold temporary values if their initial value isn't
         // needed and they end up holding a constant (which is written
         // afterwards), or they're dead. So can cells the block touches without
         // changing them, if their value is known and restored.
-        let scratch: BTreeMap<i32, Option<u8>> = self
+        let scratch: Vec<(i32, Option<u8>)> = self
             .exprs
             .keys()
-            .filter(|&&offset| !read.contains(&offset))
+            .filter(|&offset| read.binary_search(offset).is_err())
             .filter_map(|&offset| {
-                let restore = match changed.get(&offset) {
+                let index = changed.binary_search_by_key(&offset, |&(cell, _)| cell);
+                let restore = match index {
                     _ if !live.contains(offset) => None,
-                    Some(expr) => Some(expr.as_constant()?),
-                    None => Some(self.known.get(offset)?),
+                    Ok(index) => Some(changed[index].1.as_constant()?),
+                    Err(_) => Some(self.known.get(offset)?),
                 };
                 Some((offset, restore))
             })
@@ -676,14 +685,19 @@ impl Affine {
 
         let writes = changed
             .iter()
-            .filter(|(offset, _)| !scratch.contains_key(offset))
-            .map(|(&offset, &expr)| (offset, expr.clone()))
+            .filter(|(offset, _)| {
+                scratch
+                    .binary_search_by_key(offset, |&(cell, _)| cell)
+                    .is_err()
+            })
+            .copied()
             .collect();
-        let (mut output, used) = Schedule::new(writes, scratch.keys().copied().collect()).run()?;
+        let free = scratch.iter().map(|&(offset, _)| offset).collect();
+        let (mut output, used) = Schedule::new(writes, free).run()?;
 
         for (offset, restore) in scratch {
             if let Some(value) = restore
-                && (changed.contains_key(&offset) || used.contains(&offset))
+                && (is_changed(offset) || used.contains(&offset))
             {
                 output.push(AstNode::Set(offset, value));
             }
@@ -692,81 +706,110 @@ impl Affine {
     }
 }
 
-/// Something to compute while lowering a block. Writes order first since
-/// they're preferred: they free up temporaries.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Task {
-    /// Write the final value of a cell.
-    Write(i32),
-    /// Compute a shared sub-expression into a temporary cell.
-    Temporary(usize),
-}
-
 /// Orders the computations of a block such that every cell's initial value is
 /// read before it's overwritten. Sub-expressions which can't be expressed as
 /// an operand are computed once into temporary cells.
-struct Schedule {
+///
+/// The tasks are writing the final value of each cell in `writes`, followed
+/// by computing each temporary. Writes come first since they're preferred:
+/// they free up temporaries.
+struct Schedule<'a> {
     output: Vec<AstNode>,
-    writes: BTreeMap<i32, Expr>,
-    temporaries: Vec<Expr>,
-    /// Cell holding each computed temporary
-    computed: BTreeMap<Expr, i32>,
+    /// Final value of each cell, sorted by cell
+    writes: Vec<(i32, &'a Expr)>,
+    temporaries: Vec<&'a Expr>,
+    /// Cell holding each temporary, once it's computed
+    computed: Vec<Option<i32>>,
     /// Cells available for temporary values
     free: Vec<i32>,
     /// Cells whose initial value is read by each task
-    reads: BTreeMap<Task, BTreeSet<i32>>,
-    /// Temporaries each task uses
-    uses: BTreeMap<Task, BTreeSet<usize>>,
-    /// Number of pending tasks reading each cell's initial value
-    readers: BTreeMap<i32, usize>,
+    reads: Vec<Vec<i32>>,
+    /// Temporaries each task uses, in ascending order
+    uses: Vec<Vec<usize>>,
+    /// Number of pending tasks reading each cell's initial value, sorted by
+    /// cell
+    readers: Vec<(i32, usize)>,
     /// Number of pending tasks using each temporary
     users: Vec<usize>,
 }
 
-impl Schedule {
-    fn new(writes: BTreeMap<i32, Expr>, free: Vec<i32>) -> Self {
+impl<'a> Schedule<'a> {
+    fn new(writes: Vec<(i32, &'a Expr)>, free: Vec<i32>) -> Self {
         let mut schedule = Self {
             output: Vec::new(),
-            writes: BTreeMap::new(),
+            writes,
             temporaries: Vec::new(),
-            computed: BTreeMap::new(),
+            computed: Vec::new(),
             free,
-            reads: BTreeMap::new(),
-            uses: BTreeMap::new(),
-            readers: BTreeMap::new(),
+            reads: Vec::new(),
+            uses: Vec::new(),
+            readers: Vec::new(),
             users: Vec::new(),
         };
 
-        for expr in writes.values() {
-            schedule.collect_temporaries(expr);
+        for index in 0..schedule.writes.len() {
+            schedule.collect_temporaries(schedule.writes[index].1);
         }
-        for (&offset, expr) in &writes {
-            schedule.add_task(Task::Write(offset), expr);
+        for index in 0..schedule.writes.len() {
+            let (offset, expr) = schedule.writes[index];
+            schedule.add_task(Some(offset), expr);
         }
-        for (index, expr) in schedule.temporaries.clone().iter().enumerate() {
-            schedule.add_task(Task::Temporary(index), expr);
+        for index in 0..schedule.temporaries.len() {
+            schedule.add_task(None, schedule.temporaries[index]);
         }
-        schedule.writes = writes;
 
-        for (task, cells) in &schedule.reads {
-            for cell in cells {
-                if *task != Task::Write(*cell) {
-                    *schedule.readers.entry(*cell).or_insert(0) += 1;
-                }
+        let mut read = Vec::new();
+        for (task, cells) in schedule.reads.iter().enumerate() {
+            read.extend(
+                cells
+                    .iter()
+                    .filter(|&&cell| schedule.written_by(task) != Some(cell)),
+            );
+        }
+        read.sort_unstable();
+        for cell in read {
+            match schedule.readers.last_mut() {
+                Some((last, count)) if *last == cell => *count += 1,
+                _ => schedule.readers.push((cell, 1)),
             }
         }
 
         schedule
     }
 
+    /// The cell a task writes the final value of, if it's a write.
+    fn written_by(&self, task: usize) -> Option<i32> {
+        self.writes.get(task).map(|&(offset, _)| offset)
+    }
+
+    /// The task writing the final value of a cell, if there is one.
+    fn write_task(&self, cell: i32) -> Option<usize> {
+        self.writes
+            .binary_search_by_key(&cell, |&(offset, _)| offset)
+            .ok()
+    }
+
+    /// Whether a task can run: the temporaries it uses are computed and, if
+    /// it overwrites a cell, nothing else needs the cell's initial value.
+    fn ready(&self, task: usize, missing: &[usize]) -> bool {
+        missing[task] == 0
+            && self.written_by(task).is_none_or(|offset| {
+                self.readers
+                    .binary_search_by_key(&offset, |&(cell, _)| cell)
+                    .map_or(0, |index| self.readers[index].1)
+                    == 0
+            })
+    }
+
     /// Find the sub-expressions which have to be computed into temporaries
     /// because they can't be expressed as operands.
-    fn collect_temporaries(&mut self, expr: &Expr) {
+    fn collect_temporaries(&mut self, expr: &'a Expr) {
         for atom in expr.terms.keys() {
             for part in atom.parts() {
-                if part.as_operand().is_none() && !self.temporaries.contains(part) {
+                if part.as_operand().is_none() && !self.temporaries.contains(&part) {
                     self.collect_temporaries(part);
-                    self.temporaries.push(part.clone());
+                    self.temporaries.push(part);
+                    self.computed.push(None);
                     self.users.push(0);
                 }
             }
@@ -775,38 +818,38 @@ impl Schedule {
 
     /// The temporary holding the value of an atom, if there is one.
     fn temporary_for(&self, atom: &Atom) -> Option<usize> {
-        if self.temporaries.is_empty() {
-            return None;
-        }
-        let expr = Expr::atom(atom.clone());
-        self.temporaries.iter().position(|other| *other == expr)
+        self.temporaries.iter().position(|other| other.is_atom(atom))
     }
 
-    /// Record which cells and temporaries a task computing `expr` reads.
-    fn add_task(&mut self, task: Task, expr: &Expr) {
-        let mut reads = BTreeSet::new();
-        let mut uses = BTreeSet::new();
+    /// Record which cells and temporaries a task computing `expr` reads. The
+    /// task writes the final value of the cell `write`, or computes the next
+    /// temporary.
+    fn add_task(&mut self, write: Option<i32>, expr: &Expr) {
+        let mut reads = Vec::new();
+        let mut uses = Vec::new();
+        let computing = match write {
+            Some(_) => None,
+            None => Some(self.uses.len() - self.writes.len()),
+        };
 
         for atom in expr.terms.keys() {
             if let Some(temporary) = self.temporary_for(atom)
-                && task != Task::Temporary(temporary)
+                && computing != Some(temporary)
             {
-                uses.insert(temporary);
+                uses.push(temporary);
                 continue;
             }
             match atom {
-                Atom::Cell(offset) => {
-                    reads.insert(*offset);
-                }
+                Atom::Cell(offset) => reads.push(*offset),
                 atom => {
                     for part in atom.parts() {
                         if let Some(operand) = part.as_operand() {
                             reads.extend(operand.reads());
                         } else {
-                            uses.insert(
+                            uses.push(
                                 self.temporaries
                                     .iter()
-                                    .position(|other| other == part)
+                                    .position(|&other| other == part)
                                     .unwrap(),
                             );
                         }
@@ -815,89 +858,77 @@ impl Schedule {
             }
         }
 
+        reads.sort_unstable();
+        reads.dedup();
+        uses.sort_unstable();
+        uses.dedup();
         for &temporary in &uses {
             self.users[temporary] += 1;
         }
-        self.reads.insert(task, reads);
-        self.uses.insert(task, uses);
+        self.reads.push(reads);
+        self.uses.push(uses);
     }
 
     /// Returns the nodes and the cells used for temporaries.
-    fn run(mut self) -> Option<(Vec<AstNode>, BTreeSet<i32>)> {
-        let mut used = BTreeSet::new();
+    fn run(mut self) -> Option<(Vec<AstNode>, Vec<i32>)> {
+        let mut used = Vec::new();
 
         // Number of temporaries each task uses which aren't computed yet
-        let mut missing: BTreeMap<Task, usize> = self
-            .uses
-            .iter()
-            .map(|(&task, uses)| (task, uses.len()))
-            .collect();
-        let mut dependents: Vec<Vec<Task>> = vec![Vec::new(); self.temporaries.len()];
-        for (&task, uses) in &self.uses {
+        let mut missing: Vec<usize> = self.uses.iter().map(Vec::len).collect();
+        let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); self.temporaries.len()];
+        for (task, uses) in self.uses.iter().enumerate() {
             for &temporary in uses {
                 dependents[temporary].push(task);
             }
         }
 
-        let ready =
-            |task: Task, missing: &BTreeMap<Task, usize>, readers: &BTreeMap<i32, usize>| {
-                missing[&task] == 0
-                    && match task {
-                        Task::Write(offset) => readers.get(&offset).copied().unwrap_or(0) == 0,
-                        Task::Temporary(_) => true,
-                    }
-            };
-
-        let mut queue: BTreeSet<Task> = self
-            .uses
-            .keys()
-            .copied()
-            .filter(|&task| ready(task, &missing, &self.readers))
+        let mut queue: BTreeSet<usize> = (0..self.uses.len())
+            .filter(|&task| self.ready(task, &missing))
             .collect();
 
         let mut done = 0;
         while let Some(task) = queue.pop_first() {
             done += 1;
 
-            match task {
-                Task::Write(offset) => {
-                    let expr = self.writes[&offset].clone();
-                    self.assign(offset, &expr, false)?;
-                }
-                Task::Temporary(index) => {
-                    let cell = self.free.pop()?;
-                    used.insert(cell);
-                    let expr = self.temporaries[index].clone();
-                    self.assign(cell, &expr, true)?;
-                    self.computed.insert(expr, cell);
+            if let Some(offset) = self.written_by(task) {
+                let expr = self.writes[task].1;
+                self.assign(offset, expr, false)?;
+            } else {
+                let index = task - self.writes.len();
+                let cell = self.free.pop()?;
+                used.push(cell);
+                self.assign(cell, self.temporaries[index], true)?;
+                self.computed[index] = Some(cell);
 
-                    for &dependent in &dependents[index] {
-                        let count = missing.get_mut(&dependent).unwrap();
-                        *count -= 1;
-                        if ready(dependent, &missing, &self.readers) {
-                            queue.insert(dependent);
-                        }
+                for &dependent in &dependents[index] {
+                    missing[dependent] -= 1;
+                    if self.ready(dependent, &missing) {
+                        queue.insert(dependent);
                     }
                 }
             }
 
-            for &cell in &self.reads[&task] {
-                if task == Task::Write(cell) {
+            for index in 0..self.reads[task].len() {
+                let cell = self.reads[task][index];
+                if self.written_by(task) == Some(cell) {
                     continue;
                 }
-                if let Some(count) = self.readers.get_mut(&cell) {
-                    *count -= 1;
-                    let write = Task::Write(cell);
-                    if missing.contains_key(&write) && ready(write, &missing, &self.readers) {
+                if let Ok(reader) = self
+                    .readers
+                    .binary_search_by_key(&cell, |&(other, _)| other)
+                {
+                    self.readers[reader].1 -= 1;
+                    if let Some(write) = self.write_task(cell)
+                        && self.ready(write, &missing)
+                    {
                         queue.insert(write);
                     }
                 }
             }
-            for &temporary in &self.uses[&task] {
+            for &temporary in &self.uses[task] {
                 self.users[temporary] -= 1;
                 if self.users[temporary] == 0 {
-                    let cell = self.computed[&self.temporaries[temporary]];
-                    self.free.push(cell);
+                    self.free.push(self.computed[temporary].unwrap());
                 }
             }
         }
@@ -960,11 +991,9 @@ impl Schedule {
 
     /// Add `value * atom` to `dst`.
     fn term(&mut self, dst: i32, atom: &Atom, value: u8) -> Option<()> {
-        let computed = if self.computed.is_empty() {
-            None
-        } else {
-            self.computed.get(&Expr::atom(atom.clone())).copied()
-        };
+        let computed = self
+            .temporary_for(atom)
+            .and_then(|index| self.computed[index]);
         let node = match (atom, computed) {
             (_, Some(src)) if src != dst => AstNode::MulAdd {
                 src,
@@ -1004,8 +1033,10 @@ impl Schedule {
     }
 
     fn operand(&self, expr: &Expr) -> Option<Operand> {
-        expr.as_operand()
-            .or_else(|| Some(Operand::cell(*self.computed.get(expr)?)))
+        expr.as_operand().or_else(|| {
+            let index = self.temporaries.iter().position(|&other| other == expr)?;
+            Some(Operand::cell(self.computed[index]?))
+        })
     }
 }
 
@@ -1246,7 +1277,7 @@ impl Summation<'_> {
 
     /// Whether an expression has the same value in every iteration.
     fn invariant(&self, expr: &Expr) -> bool {
-        let mut cells = BTreeSet::new();
+        let mut cells = Vec::new();
         expr.reads(&mut cells);
         cells
             .into_iter()
