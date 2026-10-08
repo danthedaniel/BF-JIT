@@ -4,7 +4,7 @@
 //! effect are replaced by straight-line code, and straight-line code is
 //! symbolically executed and re-emitted with the minimum number of writes.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::rc::Rc;
 
 use super::{AstNode, Operand};
@@ -27,53 +27,113 @@ pub fn optimize(nodes: Vec<AstNode>, keep_tape: bool) -> Vec<AstNode> {
     optimize_block(annotate(nodes), Known::zeroed(), &live)
 }
 
-/// A map from cells to values, sorted by cell. The maps used while
-/// optimizing hold few cells and are created and cloned a lot, which a
-/// vector is much cheaper for than a tree.
+/// Maps switch to a tree rather than moving more cells than this to insert one.
+const MAX_INSERT_MOVES: usize = 4096;
+
+/// A map from cells to values, iterated in order of cell. The maps used while
+/// optimizing usually hold few cells and are created and cloned a lot, which
+/// a sorted vector is much cheaper for than a tree. Big ones which are
+/// inserted into anywhere but near the end switch to a tree, so inserting
+/// doesn't take quadratic time.
 #[derive(Clone)]
-struct CellMap<V>(Vec<(i32, V)>);
+enum CellMap<V> {
+    Small(Vec<(i32, V)>),
+    Large(BTreeMap<i32, V>),
+}
 
 impl<V> Default for CellMap<V> {
     fn default() -> Self {
-        Self(Vec::new())
+        Self::Small(Vec::new())
     }
 }
 
 impl<V> CellMap<V> {
-    fn find(&self, cell: i32) -> Result<usize, usize> {
-        self.0.binary_search_by_key(&cell, |&(other, _)| other)
-    }
-
     fn get(&self, cell: i32) -> Option<&V> {
-        let index = self.find(cell).ok()?;
-        Some(&self.0[index].1)
+        match self {
+            Self::Small(cells) => {
+                let index = cells.binary_search_by_key(&cell, |&(other, _)| other).ok()?;
+                Some(&cells[index].1)
+            }
+            Self::Large(cells) => cells.get(&cell),
+        }
     }
 
     fn insert(&mut self, cell: i32, value: V) {
-        match self.find(cell) {
-            Ok(index) => self.0[index].1 = value,
-            Err(index) => self.0.insert(index, (cell, value)),
+        let mut value = Some(value);
+        let slot = self.get_or_insert_with(cell, || value.take().unwrap());
+        if let Some(value) = value {
+            *slot = value;
         }
     }
 
     /// The value of a cell, inserting `value()` if there is none.
     fn get_or_insert_with(&mut self, cell: i32, value: impl FnOnce() -> V) -> &mut V {
-        let index = match self.find(cell) {
-            Ok(index) => index,
-            Err(index) => {
-                self.0.insert(index, (cell, value()));
-                index
-            }
+        let found = match self {
+            Self::Small(cells) => cells.binary_search_by_key(&cell, |&(other, _)| other),
+            Self::Large(_) => Ok(0),
         };
-        &mut self.0[index].1
+        if let (Self::Small(cells), Err(index)) = (&mut *self, found)
+            && cells.len() - index > MAX_INSERT_MOVES
+        {
+            *self = Self::Large(std::mem::take(cells).into_iter().collect());
+        }
+        match self {
+            Self::Small(cells) => {
+                let index = found.unwrap_or_else(|index| {
+                    cells.insert(index, (cell, value()));
+                    index
+                });
+                &mut cells[index].1
+            }
+            Self::Large(cells) => cells.entry(cell).or_insert_with(value),
+        }
     }
 
-    fn iter(&self) -> impl Iterator<Item = (i32, &V)> {
-        self.0.iter().map(|(cell, value)| (*cell, value))
+    fn iter(&self) -> CellIter<'_, V> {
+        match self {
+            Self::Small(cells) => CellIter::Small(cells.iter()),
+            Self::Large(cells) => CellIter::Large(cells.iter()),
+        }
     }
 
     fn keys(&self) -> impl Iterator<Item = i32> {
-        self.0.iter().map(|&(cell, _)| cell)
+        self.iter().map(|(cell, _)| cell)
+    }
+
+    /// Subtract `amount` from every cell, keeping those for which `keep`
+    /// returns true.
+    fn shift(&mut self, amount: i32, keep: impl Fn(i32) -> bool) {
+        match self {
+            // Shifting every cell by the same amount keeps them sorted.
+            Self::Small(cells) => cells.retain_mut(|(cell, _)| {
+                *cell -= amount;
+                keep(*cell)
+            }),
+            Self::Large(cells) => {
+                *cells = std::mem::take(cells)
+                    .into_iter()
+                    .map(|(cell, value)| (cell - amount, value))
+                    .filter(|&(cell, _)| keep(cell))
+                    .collect();
+            }
+        }
+    }
+}
+
+/// Iterator over the cells of a `CellMap` and their values.
+enum CellIter<'a, V> {
+    Small(std::slice::Iter<'a, (i32, V)>),
+    Large(std::collections::btree_map::Iter<'a, i32, V>),
+}
+
+impl<'a, V> Iterator for CellIter<'a, V> {
+    type Item = (i32, &'a V);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Small(cells) => cells.next().map(|(cell, value)| (*cell, value)),
+            Self::Large(cells) => cells.next().map(|(cell, value)| (*cell, value)),
+        }
     }
 }
 
@@ -96,7 +156,7 @@ impl Known {
     /// State at the exit of a loop: the current cell is zero.
     fn loop_exit() -> Self {
         Self {
-            values: CellMap(vec![(0, Some(0))]),
+            values: CellMap::Small(vec![(0, Some(0))]),
             default: None,
         }
     }
@@ -109,9 +169,7 @@ impl Known {
     /// distant cells to keep optimization fast.
     fn shift(&mut self, amount: i32) {
         let keep_all = self.default.is_some();
-        // Shifting every cell by the same amount keeps them sorted.
-        self.values.0.retain_mut(|(offset, _)| {
-            *offset -= amount;
+        self.values.shift(amount, |offset| {
             keep_all || offset.abs() <= MAX_KNOWN_DISTANCE
         });
     }
@@ -122,15 +180,16 @@ impl Known {
 #[derive(Clone, Debug)]
 enum Live {
     All,
-    /// Cells `cell + shift` for each `cell` in the sorted vector. Shifting is
-    /// lazy since unoptimized code moves the pointer a lot. A vector rather
-    /// than a tree since these are cloned for every loop.
-    Cells(Vec<i32>, i32),
+    /// Cells `cell + shift` for each `cell` in the sorted deque. Shifting is
+    /// lazy since unoptimized code moves the pointer a lot. Not a tree since
+    /// these are cloned for every loop, and a deque since code often walks
+    /// the tape backwards, inserting at the front.
+    Cells(VecDeque<i32>, i32),
 }
 
 impl Live {
     const fn none() -> Self {
-        Self::Cells(Vec::new(), 0)
+        Self::Cells(VecDeque::new(), 0)
     }
 
     fn contains(&self, offset: i32) -> bool {
@@ -172,6 +231,7 @@ impl Live {
                 let mut kept = cells.len();
                 let mut others = others.iter().rev().map(|cell| cell + delta).peekable();
                 cells.resize(kept + added, 0);
+                let cells = cells.make_contiguous();
                 for index in (0..cells.len()).rev() {
                     let Some(&other) = others.peek() else {
                         // The remaining cells are already in place.
@@ -560,6 +620,7 @@ impl Expr {
 }
 
 /// Symbolic execution of a straight-line run of nodes.
+#[derive(Default)]
 struct Affine {
     known: Known,
     exprs: CellMap<Expr>,
@@ -594,8 +655,8 @@ impl Affine {
     }
 
     /// Whether an expression is the initial value of a cell.
-    fn is_initial(&self, offset: i32, expr: &Expr) -> bool {
-        match self.known.get(offset) {
+    fn is_initial(known: &Known, offset: i32, expr: &Expr) -> bool {
+        match known.get(offset) {
             Some(value) => expr.as_constant() == Some(value),
             None => {
                 expr.constant == 0
@@ -682,7 +743,7 @@ impl Affine {
     fn changed(&self) -> impl Iterator<Item = (i32, &Expr)> {
         self.exprs
             .iter()
-            .filter(|&(offset, expr)| !self.is_initial(offset, expr))
+            .filter(|&(offset, expr)| !Self::is_initial(&self.known, offset, expr))
     }
 
     /// Knowledge about cells after this block.
@@ -690,6 +751,18 @@ impl Affine {
         let mut known = self.known.clone();
         for (offset, expr) in self.changed() {
             known.values.insert(offset, expr.as_constant());
+        }
+        known
+    }
+
+    /// Knowledge about cells after this block, without copying what's known
+    /// at its start.
+    fn into_known_after(self) -> Known {
+        let Self { mut known, exprs } = self;
+        for (offset, expr) in exprs.iter() {
+            if !Self::is_initial(&known, offset, expr) {
+                known.values.insert(offset, expr.as_constant());
+            }
         }
         known
     }
@@ -1115,7 +1188,7 @@ fn lower_halves(nodes: &[AstNode], known: &Known, live: &Live) -> Vec<AstNode> {
         .lower(&Live::All)
         .unwrap_or_else(|| lower_halves(first, known, &Live::All));
 
-    let known = affine.known_after();
+    let known = affine.into_known_after();
     let mut affine = Affine::new(known.clone());
     for node in second {
         affine.apply(node);
@@ -1147,7 +1220,7 @@ fn optimize_run(nodes: Vec<AstNode>, known: Known, live: &Live) -> (Vec<AstNode>
                 .lower(live)
                 .unwrap_or_else(|| lower_halves(straight, &affine.known, live)),
         );
-        *affine = Affine::new(affine.known_after());
+        *affine = Affine::new(std::mem::take(affine).into_known_after());
         straight.clear();
     };
 
@@ -1190,13 +1263,13 @@ impl KnownAfterRun {
         match node {
             AstNode::Print(_) => {}
             AstNode::Read(offset) => {
-                let mut known = affine.known_after();
+                let mut known = std::mem::take(affine).into_known_after();
                 known.values.insert(*offset, None);
                 *affine = Affine::new(known);
             }
             _ => {
                 if affine.too_complex(node) {
-                    *affine = Affine::new(affine.known_after());
+                    *affine = Affine::new(std::mem::take(affine).into_known_after());
                 }
                 affine.apply(node);
             }
@@ -1580,8 +1653,8 @@ mod tests {
         for a in sets {
             for b in sets {
                 for shift in -3..=3 {
-                    let mut live = Live::Cells(a.to_vec(), 0);
-                    live.union(&Live::Cells(b.to_vec(), shift));
+                    let mut live = Live::Cells(a.iter().copied().collect(), 0);
+                    live.union(&Live::Cells(b.iter().copied().collect(), shift));
                     let mut expected: Vec<i32> = a.iter().chain(b).copied().collect();
                     for cell in &mut expected[a.len()..] {
                         *cell += shift;
