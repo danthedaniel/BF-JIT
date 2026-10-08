@@ -110,17 +110,34 @@ impl Live {
         match (&mut *self, other) {
             (Self::Cells(cells, shift), Self::Cells(others, other_shift)) => {
                 let delta = other_shift - *shift;
-                let mut others = others.iter().map(|cell| cell + delta).peekable();
-                let mut merged = Vec::with_capacity(cells.len() + others.len());
-                for &cell in &*cells {
-                    while let Some(other) = others.next_if(|&other| other < cell) {
-                        merged.push(other);
-                    }
-                    others.next_if_eq(&cell);
-                    merged.push(cell);
+                let added = others
+                    .iter()
+                    .filter(|&&cell| cells.binary_search(&(cell + delta)).is_err())
+                    .count();
+                if added == 0 {
+                    return;
                 }
-                merged.extend(others);
-                *cells = merged;
+
+                // Merge from the back, so the cells only move once.
+                let mut kept = cells.len();
+                let mut others = others.iter().rev().map(|cell| cell + delta).peekable();
+                cells.resize(kept + added, 0);
+                for index in (0..cells.len()).rev() {
+                    let Some(&other) = others.peek() else {
+                        // The remaining cells are already in place.
+                        break;
+                    };
+                    if kept > 0 && cells[kept - 1] >= other {
+                        if cells[kept - 1] == other {
+                            others.next();
+                        }
+                        kept -= 1;
+                        cells[index] = cells[kept];
+                    } else {
+                        others.next();
+                        cells[index] = other;
+                    }
+                }
             }
             _ => *self = Self::All,
         }
@@ -240,14 +257,15 @@ enum Atom {
 
 impl Atom {
     /// The expressions this atom is computed from.
-    fn parts(&self) -> Vec<&Expr> {
-        match self {
-            Self::Cell(_) => Vec::new(),
-            Self::Less(lhs, rhs) => vec![lhs, rhs],
+    fn parts(&self) -> impl Iterator<Item = &Expr> {
+        let parts: [Option<&Expr>; 3] = match self {
+            Self::Cell(_) => [None, None, None],
+            Self::Less(lhs, rhs) => [Some(lhs), Some(rhs), None],
             Self::Product {
                 base, step, count, ..
-            } => vec![base, step, count],
-        }
+            } => [Some(base), Some(step), Some(count)],
+        };
+        parts.into_iter().flatten()
     }
 }
 
@@ -450,14 +468,15 @@ impl Expr {
     fn size(&self) -> usize {
         self.terms
             .keys()
-            .map(|atom| 1 + atom.parts().iter().map(|part| part.size()).sum::<usize>())
+            .map(|atom| 1 + atom.parts().map(Expr::size).sum::<usize>())
             .sum()
     }
 
     fn reads_cell(&self, offset: i32) -> bool {
-        let mut cells = BTreeSet::new();
-        self.reads(&mut cells);
-        cells.contains(&offset)
+        self.terms.keys().any(|atom| match atom {
+            Atom::Cell(cell) => *cell == offset,
+            atom => atom.parts().any(|part| part.reads_cell(offset)),
+        })
     }
 
     /// Replace cells with known values by constants.
@@ -898,7 +917,7 @@ impl Schedule {
             !scratch
                 && match atom {
                     Atom::Cell(offset) => *offset == dst,
-                    atom => atom.parts().iter().any(|part| part.reads_cell(dst)),
+                    atom => atom.parts().any(|part| part.reads_cell(dst)),
                 }
         };
 
@@ -1475,6 +1494,26 @@ fn shift(node: &AstNode, amount: i32) -> AstNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_union() {
+        let sets: [&[i32]; 5] = [&[], &[0], &[-3, 1, 2], &[-5, -3, 0, 2, 7], &[1, 2, 3, 4]];
+        for a in sets {
+            for b in sets {
+                for shift in -3..=3 {
+                    let mut live = Live::Cells(a.to_vec(), 0);
+                    live.union(&Live::Cells(b.to_vec(), shift));
+                    let mut expected: Vec<i32> = a.iter().chain(b).copied().collect();
+                    for cell in &mut expected[a.len()..] {
+                        *cell += shift;
+                    }
+                    expected.sort_unstable();
+                    expected.dedup();
+                    assert!(matches!(live, Live::Cells(cells, 0) if cells == expected));
+                }
+            }
+        }
+    }
 
     #[test]
     fn inverse_is_correct() {
