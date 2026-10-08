@@ -117,14 +117,20 @@ impl AstNode {
         let mut line = 1;
         let mut col = 0;
 
-        for character in input.chars() {
+        let mut characters = input.chars().peekable();
+        while let Some(character) = characters.next() {
             col += 1;
 
             let next_node = match character {
                 '+' => AstNode::Add(0, 1),
                 '-' => AstNode::Add(0, u8::MAX),
                 '>' | '<' => {
-                    let amount = if character == '>' { 1 } else { -1 };
+                    let step = |character| if character == '>' { 1 } else { -1 };
+                    let mut amount = step(character);
+                    while let Some(character) = characters.next_if(|&c| c == '>' || c == '<') {
+                        col += 1;
+                        amount += step(character);
+                    }
                     let nodes = loops.last_mut().unwrap_or(&mut output);
                     // Merge runs of pointer movement, which is most of a
                     // typical program. Moves cancelling out are kept since
