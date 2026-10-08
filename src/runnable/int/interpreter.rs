@@ -69,6 +69,22 @@ impl Interpreter {
                     dst,
                     value,
                 }),
+                AstNode::DivMod {
+                    dividend,
+                    dividend_len,
+                    divisor,
+                    divisor_len,
+                    quotient,
+                    factor,
+                } => instrs.push(Instr::DivMod {
+                    dividend,
+                    dividend_len,
+                    divisor,
+                    divisor_len,
+                    quotient,
+                    factor,
+                }),
+                AstNode::Skip { exits, steps } => instrs.push(Instr::Skip { exits, steps }),
                 AstNode::Move(n) => instrs.push(Instr::Move(n)),
                 AstNode::Print(offset) => instrs.push(Instr::Print(offset)),
                 AstNode::Read(offset) => instrs.push(Instr::Read(offset)),
@@ -121,6 +137,52 @@ impl Interpreter {
         })
     }
 
+    /// The little-endian number in `len` cells from `start`.
+    fn number(&mut self, start: i32, len: u8) -> Result<u64> {
+        let mut number = 0;
+        for i in (0..i32::from(len)).rev() {
+            number = (number << 8) | u64::from(*self.cell(start + i)?);
+        }
+        Ok(number)
+    }
+
+    /// Execute a `DivMod` instruction.
+    fn div_mod(
+        &mut self,
+        dividend: i32,
+        dividend_len: u8,
+        divisor: i32,
+        divisor_len: u8,
+        quotient: i32,
+        factor: u8,
+    ) -> Result<()> {
+        let divisor = self.number(divisor, divisor_len)?;
+        if divisor != 0 {
+            let number = self.number(dividend, dividend_len)?;
+            let remainder = (number % divisor).to_le_bytes();
+            for (i, &byte) in (0..).zip(&remainder[..usize::from(dividend_len)]) {
+                *self.cell(dividend + i)? = byte;
+            }
+            let cell = self.cell(quotient)?;
+            *cell = cell.wrapping_add((number / divisor).to_le_bytes()[0].wrapping_mul(factor));
+        }
+        Ok(())
+    }
+
+    /// Execute a `Skip` instruction.
+    fn skip(&mut self, exits: &[(i32, u8, u8)], steps: &[(i32, u8)]) -> Result<()> {
+        let mut count = u8::MAX;
+        for &(cell, target, factor) in exits {
+            let value = *self.cell(cell)?;
+            count = count.min(target.wrapping_sub(value).wrapping_mul(factor));
+        }
+        for &(cell, step) in steps {
+            let cell = self.cell(cell)?;
+            *cell = cell.wrapping_add(count.wrapping_mul(step));
+        }
+        Ok(())
+    }
+
     /// Move the data pointer.
     fn shift(&mut self, amount: i32) -> Result<()> {
         self.dp = self
@@ -139,6 +201,7 @@ impl Interpreter {
     ///
     /// Returns Ok(true) to continue execution, Ok(false) when the program has terminated normally,
     /// or Err(_) on execution errors.
+    #[allow(clippy::too_many_lines)]
     pub fn step(&mut self) -> Result<bool> {
         // Terminate if the program counter is outside of the program.
         if self.pc >= self.program.len() {
@@ -187,6 +250,25 @@ impl Interpreter {
                 let cell = self.cell(dst)?;
                 *cell = cell.wrapping_add(byte.wrapping_mul(value));
             }
+            Instr::DivMod {
+                dividend,
+                dividend_len,
+                divisor,
+                divisor_len,
+                quotient,
+                factor,
+            } => self.div_mod(
+                dividend,
+                dividend_len,
+                divisor,
+                divisor_len,
+                quotient,
+                factor,
+            )?,
+            Instr::Skip {
+                ref exits,
+                ref steps,
+            } => self.skip(&exits.clone(), &steps.clone())?,
             Instr::Move(n) => self.shift(n)?,
             Instr::Print(offset) => {
                 let value = *self.cell(offset)?;

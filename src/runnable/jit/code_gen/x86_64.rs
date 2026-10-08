@@ -9,7 +9,7 @@ const PTR_SIZE: u8 = 8;
 // r10 - BrainFuck memory pointer (current cell)
 // r11 - JITTarget pointer
 // r12 - VTable pointer
-// eax, ecx - Temporary registers
+// eax, ecx, edx, r8, r9 - Temporary registers
 // r15 - BrainFuck memory base pointer (for syscalls)
 
 fn callee_save_to_stack(bytes: &mut Vec<u8>) {
@@ -274,6 +274,104 @@ pub fn straight_line(bytes: &mut Vec<u8>, nodes: &[AstNode]) {
             }
             _ => unreachable!("not a straight-line node: {node:?}"),
         }
+    }
+}
+
+/// Load the little-endian number in `len` cells from `start` into rax
+/// (`reg` = 0) or r8 (`reg` = 8), using r9 as a temporary.
+fn load_number(bytes: &mut Vec<u8>, reg: u8, start: i32, len: u8) {
+    let rex_b = reg >> 3;
+    // xor e<reg>, e<reg>
+    bytes.extend_from_slice(&[0x40 | (rex_b * 5), 0x31, 0xc0]);
+    for i in (0..i32::from(len)).rev() {
+        // shl <reg>, 8
+        bytes.extend_from_slice(&[0x48 | rex_b, 0xc1, 0xe0, 8]);
+        // movzx r9d, byte [r10 + offset]
+        bytes.extend_from_slice(&[0x45, 0x0f, 0xb6]);
+        cell_operand(bytes, 1, start + i);
+        // or <reg>, r9
+        bytes.extend_from_slice(&[0x4c | rex_b, 0x09, 0xc8]);
+    }
+}
+
+pub fn div_mod(bytes: &mut Vec<u8>, node: &AstNode) {
+    let AstNode::DivMod {
+        dividend,
+        dividend_len,
+        divisor,
+        divisor_len,
+        quotient,
+        factor,
+    } = *node
+    else {
+        unreachable!("not a division: {node:?}");
+    };
+
+    load_number(bytes, 8, divisor, divisor_len);
+
+    let mut divide = Vec::new();
+    load_number(&mut divide, 0, dividend, dividend_len);
+    // xor edx, edx
+    divide.extend_from_slice(&[0x31, 0xd2]);
+    // div r8
+    divide.extend_from_slice(&[0x49, 0xf7, 0xf0]);
+    for i in 0..i32::from(dividend_len) {
+        // mov byte [r10 + offset], dl
+        divide.extend_from_slice(&[0x41, 0x88]);
+        cell_operand(&mut divide, 2, dividend + i);
+        // shr rdx, 8
+        divide.extend_from_slice(&[0x48, 0xc1, 0xea, 8]);
+    }
+    if factor != 0 {
+        if factor != 1 {
+            // imul eax, eax, factor
+            divide.extend_from_slice(&[0x6b, 0xc0, factor]);
+        }
+        // add byte [r10 + quotient], al
+        divide.extend_from_slice(&[0x41, 0x00]);
+        cell_operand(&mut divide, 0, quotient);
+    }
+
+    // test r8, r8
+    bytes.extend_from_slice(&[0x4d, 0x85, 0xc0]);
+    // jz over the division
+    bytes.extend_from_slice(&[0x0f, 0x84]);
+    bytes.extend_from_slice(&i32::try_from(divide.len()).unwrap().to_le_bytes());
+    bytes.extend(divide);
+}
+
+pub fn skip(bytes: &mut Vec<u8>, exits: &[(i32, u8, u8)], steps: &[(i32, u8)]) {
+    // edx = the smallest number of steps until a cell reaches its target
+    for (i, &(cell, target, factor)) in exits.iter().enumerate() {
+        // mov eax, target
+        bytes.push(0xb8);
+        bytes.extend_from_slice(&u32::from(target).to_le_bytes());
+        load_cell(bytes, 1, cell);
+        // sub eax, ecx
+        bytes.extend_from_slice(&[0x29, 0xc8]);
+        // imul eax, eax, factor
+        bytes.extend_from_slice(&[0x69, 0xc0]);
+        bytes.extend_from_slice(&u32::from(factor).to_le_bytes());
+        // movzx eax, al
+        bytes.extend_from_slice(&[0x0f, 0xb6, 0xc0]);
+        if i == 0 {
+            // mov edx, eax
+            bytes.extend_from_slice(&[0x89, 0xc2]);
+        } else {
+            // cmp eax, edx
+            bytes.extend_from_slice(&[0x39, 0xd0]);
+            // cmovb edx, eax
+            bytes.extend_from_slice(&[0x0f, 0x42, 0xd0]);
+        }
+    }
+
+    for &(cell, step) in steps {
+        // imul eax, edx, step
+        bytes.extend_from_slice(&[0x69, 0xc2]);
+        bytes.extend_from_slice(&u32::from(step).to_le_bytes());
+        // add byte [r10 + cell], al
+        bytes.extend_from_slice(&[0x41, 0x00]);
+        cell_operand(bytes, 0, cell);
     }
 }
 

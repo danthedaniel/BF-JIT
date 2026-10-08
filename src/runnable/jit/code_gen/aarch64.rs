@@ -606,6 +606,98 @@ fn product_add(
     multiply_add(bytes, ADDR, rd, value);
 }
 
+/// Load the little-endian number in `len` cells from `start` into x`rd`,
+/// using x8 as a temporary.
+fn load_number(bytes: &mut Vec<u8>, rd: u32, start: i32, len: u8) {
+    let len = i32::from(len);
+    load_byte(bytes, rd, start + len - 1);
+    for i in (0..len - 1).rev() {
+        load_byte(bytes, TMP, start + i);
+        // orr xd, x8, xd, lsl #8
+        emit_u32(bytes, 0xaa00_2000 | (rd << 16) | (TMP << 5) | rd);
+    }
+}
+
+pub fn div_mod(bytes: &mut Vec<u8>, node: &AstNode) {
+    let AstNode::DivMod {
+        dividend,
+        dividend_len,
+        divisor,
+        divisor_len,
+        quotient,
+        factor,
+    } = *node
+    else {
+        unreachable!("not a division: {node:?}");
+    };
+
+    // x0 = dividend, then remainder; x1 = divisor; x2 = quotient
+    load_number(bytes, 1, divisor, divisor_len);
+
+    let mut divide = Vec::new();
+    load_number(&mut divide, 0, dividend, dividend_len);
+    // udiv x2, x0, x1
+    emit_u32(&mut divide, 0x9ac0_0800 | (1 << 16) | 2);
+    // msub x0, x2, x1, x0
+    emit_u32(&mut divide, 0x9b00_8000 | (1 << 16) | (2 << 5));
+    for i in 0..i32::from(dividend_len) {
+        store_byte(&mut divide, 0, dividend + i);
+        // lsr x0, x0, #8
+        emit_u32(&mut divide, 0xd348_fc00);
+    }
+    if factor != 0 {
+        load_byte(&mut divide, 3, quotient);
+        // movz w4, #factor
+        emit_u32(&mut divide, 0x5280_0000 | (u32::from(factor) << 5) | 4);
+        // madd w3, w2, w4, w3
+        emit_u32(
+            &mut divide,
+            0x1b00_0000 | (4 << 16) | (3 << 10) | (2 << 5) | 3,
+        );
+        store_byte(&mut divide, 3, quotient);
+    }
+
+    // cbz x1, over the division
+    let skip = i32::try_from(divide.len() / 4).unwrap() + 1;
+    emit_u32(bytes, 0xb400_0000 | (bits(skip, 19) << 5) | 1);
+    bytes.extend(divide);
+}
+
+pub fn skip(bytes: &mut Vec<u8>, exits: &[(i32, u8, u8)], steps: &[(i32, u8)]) {
+    // w3 = the smallest number of steps until a cell reaches its target
+    for (i, &(cell, target, factor)) in exits.iter().enumerate() {
+        load_byte(bytes, 0, cell);
+        // movz w1, #target
+        emit_u32(bytes, 0x5280_0000 | (u32::from(target) << 5) | 1);
+        // sub w1, w1, w0
+        emit_u32(bytes, 0x4b00_0021);
+        // movz w2, #factor
+        emit_u32(bytes, 0x5280_0000 | (u32::from(factor) << 5) | 2);
+        // mul w1, w1, w2
+        emit_u32(bytes, 0x1b02_7c21);
+        // and w1, w1, #0xff
+        emit_u32(bytes, 0x1200_1c21);
+        if i == 0 {
+            // mov w3, w1
+            emit_u32(bytes, 0x2a01_03e3);
+        } else {
+            // cmp w1, w3
+            emit_u32(bytes, 0x6b03_003f);
+            // csel w3, w1, w3, lo
+            emit_u32(bytes, 0x1a83_3023);
+        }
+    }
+
+    for &(cell, step) in steps {
+        load_byte(bytes, 0, cell);
+        // movz w2, #step
+        emit_u32(bytes, 0x5280_0000 | (u32::from(step) << 5) | 2);
+        // madd w0, w3, w2, w0
+        emit_u32(bytes, 0x1b02_0060);
+        store_byte(bytes, 0, cell);
+    }
+}
+
 /// Add a value to x19.
 fn add_to_pointer(bytes: &mut Vec<u8>, amount: i32) {
     if (0..4096).contains(&amount) {

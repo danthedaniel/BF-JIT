@@ -6,6 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use super::accelerate::accelerate;
 use super::{AstNode, Operand};
 
 /// Runs longer than this are flushed before looking into a loop, to keep
@@ -1054,7 +1055,28 @@ fn optimize_loop(body: Vec<Raw>, summary: &Summary, entry: &Known, exit: &Live) 
         return OptimizedLoop::Node(AstNode::Scan(stride));
     }
 
-    solve_loop(&body, entry, exit, &live).unwrap_or(OptimizedLoop::Node(AstNode::Loop(body)))
+    if let Some(solved) = solve_loop(&body, entry, exit, &live) {
+        return solved;
+    }
+
+    // Perform all iterations but the last at once, if possible. Then the loop
+    // runs once, and the last iteration only matters for cells used later.
+    match accelerate(&body) {
+        Some(acceleration) => {
+            let mut accelerated = vec![acceleration.node];
+            if acceleration
+                .last_changes
+                .iter()
+                .any(|&cell| exit.contains(cell))
+            {
+                accelerated.extend(body);
+            } else {
+                accelerated.push(AstNode::Set(0, 0));
+            }
+            OptimizedLoop::Node(AstNode::Loop(accelerated))
+        }
+        None => OptimizedLoop::Node(AstNode::Loop(body)),
+    }
 }
 
 /// Computes the total effect of a loop which runs `iterations` times.
@@ -1245,7 +1267,7 @@ fn solve_loop(body: &[AstNode], entry: &Known, exit: &Live, live: &Live) -> Opti
 }
 
 /// Multiplicative inverse of an odd number modulo 256.
-fn inverse(value: u8) -> u8 {
+pub(super) fn inverse(value: u8) -> u8 {
     // Newton's method: each step doubles the number of correct bits.
     let mut inverse = value;
     for _ in 0..3 {
