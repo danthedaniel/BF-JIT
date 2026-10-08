@@ -1078,26 +1078,36 @@ fn optimize_run(nodes: Vec<AstNode>, known: Known, live: &Live) -> (Vec<AstNode>
     (output, affine.known)
 }
 
-/// The knowledge about cells after a run of straight-line, `Print` and `Read` nodes.
-fn known_after_run(nodes: &[AstNode], known: Known) -> Known {
-    let mut affine = Affine::new(known);
-    for node in nodes {
+/// The knowledge about cells after a run of straight-line, `Print` and `Read`
+/// nodes, updated as nodes are added to the run.
+struct KnownAfterRun(Affine);
+
+impl KnownAfterRun {
+    fn new(known: Known) -> Self {
+        Self(Affine::new(known))
+    }
+
+    fn push(&mut self, node: &AstNode) {
+        let affine = &mut self.0;
         match node {
             AstNode::Print(_) => {}
             AstNode::Read(offset) => {
                 let mut known = affine.known_after();
                 known.values.insert(*offset, None);
-                affine = Affine::new(known);
+                *affine = Affine::new(known);
             }
             _ => {
                 if affine.too_complex(node) {
-                    affine = Affine::new(affine.known_after());
+                    *affine = Affine::new(affine.known_after());
                 }
                 affine.apply(node);
             }
         }
     }
-    affine.known_after()
+
+    fn get(&self) -> Known {
+        self.0.known_after()
+    }
 }
 
 /// Result of optimizing a loop.
@@ -1329,6 +1339,8 @@ fn optimize_block(nodes: Vec<Raw>, mut known: Known, live: &Live) -> Vec<AstNode
     let mut offset = 0;
     // Pending straight-line nodes, relative to the pointer before `offset`
     let mut run = Vec::new();
+    // The knowledge about cells after `run`
+    let mut after_run = KnownAfterRun::new(known.clone());
 
     // The cells used after each loop, relative to its pointer.
     let mut live_after_loops = Vec::new();
@@ -1370,13 +1382,18 @@ fn optimize_block(nodes: Vec<Raw>, mut known: Known, live: &Live) -> Vec<AstNode
                 let live_before = &live_before;
                 if run.len() > MAX_RUN {
                     flush_run(&mut run, &mut known, &mut output, live_before, offset);
+                    after_run = KnownAfterRun::new(known.clone());
                 }
-                let mut entry = known_after_run(&run, known.clone());
+                let mut entry = after_run.get();
                 entry.shift(offset);
 
                 match optimize_loop(body, &entry, live_after, live_before) {
                     OptimizedLoop::Inline(nodes) => {
-                        run.extend(nodes.iter().map(|node| shift(node, offset)));
+                        for node in nodes {
+                            let node = shift(&node, offset);
+                            after_run.push(&node);
+                            run.push(node);
+                        }
                     }
                     OptimizedLoop::Node(node) => {
                         // Skip loops which are statically known to never run.
@@ -1388,6 +1405,7 @@ fn optimize_block(nodes: Vec<Raw>, mut known: Known, live: &Live) -> Vec<AstNode
                         flush_move(&mut offset, &mut known, &mut output);
                         output.push(node);
                         known = Known::loop_exit();
+                        after_run = KnownAfterRun::new(known.clone());
                     }
                 }
             }
@@ -1396,8 +1414,13 @@ fn optimize_block(nodes: Vec<Raw>, mut known: Known, live: &Live) -> Vec<AstNode
                 flush_move(&mut offset, &mut known, &mut output);
                 output.push(AstNode::Syscall);
                 known = Known::default();
+                after_run = KnownAfterRun::new(known.clone());
             }
-            Raw::Node(node) => run.push(shift(&node, offset)),
+            Raw::Node(node) => {
+                let node = shift(&node, offset);
+                after_run.push(&node);
+                run.push(node);
+            }
         }
     }
 
