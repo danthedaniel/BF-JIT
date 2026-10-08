@@ -39,8 +39,8 @@ pub enum Instr {
     },
     /// Step cells by the number of steps until one reaches a target.
     Skip {
-        exits: Vec<(i32, u8, u8)>,
-        steps: Vec<(i32, u8)>,
+        exits: Box<[(i32, u8, u8)]>,
+        steps: Box<[(i32, u8)]>,
     },
     /// Shift the data pointer.
     Move(i32),

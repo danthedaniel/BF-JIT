@@ -46,8 +46,8 @@ pub enum AstNode {
     /// `(cell, target, factor)` in `exits`, `(target - cell) * factor` is a
     /// number of steps (wrapping), and `n` is the smallest of them.
     Skip {
-        exits: Vec<(i32, u8, u8)>,
-        steps: Vec<(i32, u8)>,
+        exits: Box<[(i32, u8, u8)]>,
+        steps: Box<[(i32, u8)]>,
     },
     /// Shift the data pointer.
     Move(i32),

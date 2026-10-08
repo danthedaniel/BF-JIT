@@ -607,7 +607,10 @@ fn count(
     }
     let last = d.and(runs, stopping)?;
     Some(Acceleration {
-        node: AstNode::Skip { exits, steps },
+        node: AstNode::Skip {
+            exits: exits.into(),
+            steps: steps.into(),
+        },
         last_changes: d.changes(last, &initial, &after)?,
     })
 }
