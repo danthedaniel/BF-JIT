@@ -135,9 +135,13 @@ impl JITTarget {
         }
 
         // Fold the pointer movement at the end of the body into the loop
-        // condition, unless it's part of the body's straight-line code.
+        // condition, unless it's part of straight-line code at the end of the
+        // body.
+        let in_run = nodes.len() >= 2
+            && code_gen::is_straight_line(&nodes[nodes.len() - 1])
+            && code_gen::is_straight_line(&nodes[nodes.len() - 2]);
         let trailing_move = match nodes.last() {
-            Some(&AstNode::Move(n)) if !straight_line => {
+            Some(&AstNode::Move(n)) if !in_run => {
                 nodes.pop();
                 n
             }

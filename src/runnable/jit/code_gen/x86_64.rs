@@ -36,6 +36,7 @@ const CACHE_REGS: [u8; 9] = [RDX, RBX, RBP, RSI, RDI, R8, R9, R13, R14];
 // Condition codes
 const CC_B: u8 = 0x2;
 const CC_AE: u8 = 0x3;
+const CC_E: u8 = 0x4;
 const CC_NE: u8 = 0x5;
 
 fn callee_save_to_stack(bytes: &mut Vec<u8>) {
@@ -428,6 +429,21 @@ impl CellCache {
         CACHE_REGS[slot]
     }
 
+    /// Allocate a register to a cell whose value won't be used before it's
+    /// set, without loading it.
+    fn reserve(&mut self, offset: i32) {
+        let reg = self.allocate(&mut Vec::new(), offset);
+        self.entries.insert(
+            offset,
+            Entry {
+                reg: Some(reg),
+                dirty: false,
+                constant: None,
+                materialized: true,
+            },
+        );
+    }
+
     /// The known constant value of a cell, without loading it.
     fn constant(&self, offset: i32) -> Option<u8> {
         self.entries.get(&offset).and_then(|entry| entry.constant)
@@ -667,15 +683,36 @@ impl CellCache {
             None => {
                 let mut regs = Vec::new();
                 for &(offset, value) in sets {
-                    if self.constant(offset) != Some(value) {
-                        regs.push((self.modify(bytes, offset), value));
+                    match self.constant(offset) {
+                        Some(constant) if constant == value => {}
+                        Some(constant) => {
+                            regs.push((self.overwrite(bytes, offset), value, Some(constant)));
+                        }
+                        None => regs.push((self.modify(bytes, offset), value, None)),
                     }
                 }
                 let counter = self.read(bytes, counter);
+
+                // Whether the result is just the condition (or its inverse)
+                let flag =
+                    |constant, value| matches!((constant, value), (Some(0), 1) | (Some(1), 0));
+                // Prepare known constants before the test sets the flags.
+                for &(reg, value, constant) in &regs {
+                    match constant {
+                        // xor e<reg>, e<reg>
+                        Some(_) if flag(constant, value) => arith(bytes, XOR, reg, reg),
+                        Some(constant) => mov_imm(bytes, reg, constant),
+                        None => {}
+                    }
+                }
                 test_byte(bytes, counter);
-                for (reg, value) in regs {
-                    mov_imm(bytes, TMP, value);
-                    cmov(bytes, CC_NE, reg, TMP);
+                for (reg, value, constant) in regs {
+                    if flag(constant, value) {
+                        set(bytes, if value == 1 { CC_NE } else { CC_E }, reg);
+                    } else {
+                        mov_imm(bytes, TMP, value);
+                        cmov(bytes, CC_NE, reg, TMP);
+                    }
                 }
             }
         }
@@ -873,10 +910,30 @@ pub fn register_loop(bytes: &mut Vec<u8>, nodes: &[AstNode]) -> bool {
         return false;
     }
 
+    // Cells whose value at the start of an iteration is used, rather than
+    // being set first
+    let live: Vec<i32> = cells
+        .iter()
+        .copied()
+        .filter(|&cell| {
+            cell == 0
+                || !matches!(
+                    steps
+                        .iter()
+                        .find(|step| accessed_cells(step).contains(&cell)),
+                    Some(Step::Node(AstNode::Set(..)))
+                )
+        })
+        .collect();
+
     let mut head = Vec::new();
     let mut cache = CellCache::default();
     for &cell in &cells {
-        cache.read(&mut head, cell);
+        if live.contains(&cell) {
+            cache.read(&mut head, cell);
+        } else {
+            cache.reserve(cell);
+        }
     }
     let counter = cache.read(&mut head, 0);
 
@@ -889,24 +946,30 @@ pub fn register_loop(bytes: &mut Vec<u8>, nodes: &[AstNode]) -> bool {
     }
     bytes.extend(head);
 
-    // Every cell must be in its register at the end of each iteration.
-    for &cell in &cells {
+    // Cells used by the next iteration must be in their registers.
+    for &cell in &live {
         cache.read(&mut body, cell);
     }
     test_byte(&mut body, counter);
 
+    // Write back cells after running the body at least once. Memory is
+    // already up to date if it doesn't run.
+    let mut tail = Vec::new();
+    cache.flush(&mut tail);
+
     // Length of the body including the jnz at its end
     let body_len = i32::try_from(body.len()).unwrap() + 6;
+    let tail_len = i32::try_from(tail.len()).unwrap();
     test_byte(bytes, counter);
     // jz     end
     bytes.extend_from_slice(&[0x0f, 0x84]);
-    bytes.extend_from_slice(&body_len.to_le_bytes());
+    bytes.extend_from_slice(&(body_len + tail_len).to_le_bytes());
     bytes.extend(body);
     // jnz    start
     bytes.extend_from_slice(&[0x0f, 0x85]);
     bytes.extend_from_slice(&(-body_len).to_le_bytes());
-
-    cache.flush(bytes);
+    bytes.extend(tail);
+    // end:
     true
 }
 
@@ -1073,9 +1136,15 @@ fn product_add(
 }
 
 pub fn move_pointer(bytes: &mut Vec<u8>, amount: i32) {
-    // add r10, amount
-    bytes.extend_from_slice(&[0x49, 0x81, 0xc2]);
-    bytes.extend_from_slice(&amount.to_le_bytes());
+    if let Ok(amount) = i8::try_from(amount) {
+        // add r10, amount  (sign-extended imm8)
+        bytes.extend_from_slice(&[0x49, 0x83, 0xc2]);
+        bytes.extend_from_slice(&amount.to_le_bytes());
+    } else {
+        // add r10, amount
+        bytes.extend_from_slice(&[0x49, 0x81, 0xc2]);
+        bytes.extend_from_slice(&amount.to_le_bytes());
+    }
 }
 
 fn fn_call_pre(bytes: &mut Vec<u8>) {
@@ -1171,14 +1240,18 @@ pub fn read(bytes: &mut Vec<u8>, offset: i32) {
 }
 
 pub fn scan(bytes: &mut Vec<u8>, stride: i32) {
+    let mut step = Vec::new();
+    move_pointer(&mut step, stride);
+    let step_len = u8::try_from(step.len()).unwrap();
+
     // loop:
     // cmp    byte [r10], 0
     bytes.extend_from_slice(&[0x41, 0x80, 0x3a, 0x00]);
     // je     done (over the add and jmp)
-    bytes.extend_from_slice(&[0x74, 9]);
-    move_pointer(bytes, stride);
+    bytes.extend_from_slice(&[0x74, step_len + 2]);
+    bytes.extend(step);
     // jmp    loop
-    bytes.extend_from_slice(&[0xeb, 0xf1]);
+    bytes.extend_from_slice(&[0xeb, (step_len + 8).wrapping_neg()]);
     // done:
 }
 
