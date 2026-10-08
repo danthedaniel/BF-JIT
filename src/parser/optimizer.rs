@@ -5,6 +5,7 @@
 //! symbolically executed and re-emitted with the minimum number of writes.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
 
 use super::{AstNode, Operand};
 
@@ -244,13 +245,13 @@ enum Atom {
     /// The value of a cell.
     Cell(i32),
     /// 1 if `lhs < rhs`, otherwise 0.
-    Less(Box<Expr>, Box<Expr>),
+    Less(Rc<Expr>, Rc<Expr>),
     /// A byte of `base + step * count`. The high byte is how often adding
     /// `step` to `base` `count` times wraps around.
     Product {
-        base: Box<Expr>,
-        step: Box<Expr>,
-        count: Box<Expr>,
+        base: Rc<Expr>,
+        step: Rc<Expr>,
+        count: Rc<Expr>,
         high: bool,
     },
 }
@@ -363,7 +364,7 @@ impl Expr {
             (Some(l), Some(r)) => Self::constant(u8::from(l < r)),
             // Nothing is below 0 or above 255.
             (_, Some(0)) | (Some(u8::MAX), _) => Self::constant(0),
-            _ => Self::atom(Atom::Less(Box::new(lhs), Box::new(rhs))),
+            _ => Self::atom(Atom::Less(Rc::new(lhs), Rc::new(rhs))),
         }
     }
 
@@ -388,9 +389,9 @@ impl Expr {
                 expr
             }
             _ => Self::atom(Atom::Product {
-                base: Box::new(base),
-                step: Box::new(step),
-                count: Box::new(count),
+                base: Rc::new(base),
+                step: Rc::new(step),
+                count: Rc::new(count),
                 high,
             }),
         }
