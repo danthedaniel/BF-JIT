@@ -1,6 +1,7 @@
 use anyhow::{Result, bail};
 
 use super::optimizer::optimize;
+use super::words::lift;
 
 /// brainfuck AST node
 ///
@@ -48,6 +49,15 @@ pub enum AstNode {
     Skip {
         exits: Box<[(i32, u8, u8)]>,
         steps: Box<[(i32, u8)]>,
+    },
+    /// Set the little-endian number in the `len` cells from `dst` to the sum
+    /// of `constant` and `terms`, wrapping. Terms are read before anything is
+    /// written.
+    Word {
+        dst: i32,
+        len: u8,
+        terms: Box<[WordTerm]>,
+        constant: u64,
     },
     /// Shift the data pointer.
     Move(i32),
@@ -114,19 +124,119 @@ impl Operand {
     }
 }
 
+/// The little-endian number in the `len` cells from `cell`, times the one in
+/// the cells `times` gives if any, shifted right by `shift` bytes, and
+/// negated if `negate` is set.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
+pub struct WordTerm {
+    pub cell: i32,
+    pub len: u8,
+    pub times: Option<(i32, u8)>,
+    pub shift: u8,
+    pub negate: bool,
+}
+
+impl WordTerm {
+    /// The cells holding the number.
+    pub fn number(self) -> std::ops::Range<i32> {
+        self.cell..self.cell + i32::from(self.len)
+    }
+
+    /// The cells the term reads.
+    pub fn reads(self) -> impl Iterator<Item = i32> {
+        let times = self
+            .times
+            .map_or(0..0, |(cell, len)| cell..cell + i32::from(len));
+        self.number().chain(times)
+    }
+
+    /// The value of the term, given its number and the one it's multiplied
+    /// by.
+    pub fn eval(self, number: u64, times: Option<u64>) -> u64 {
+        let value = u128::from(number) * u128::from(times.unwrap_or(1));
+        #[allow(clippy::cast_possible_truncation)]
+        let value = (value >> (8 * self.shift)) as u64;
+        if self.negate {
+            value.wrapping_neg()
+        } else {
+            value
+        }
+    }
+}
+
 impl AstNode {
     /// Convert raw input into an optimized AST.
     ///
     /// If `enable_syscalls` is true, the `%` character will be parsed as a syscall instruction.
     pub fn parse(input: &str, enable_syscalls: bool) -> Result<Vec<AstNode>> {
-        Self::parse_raw(input, enable_syscalls).map(|nodes| optimize(nodes, false))
+        Self::parse_raw(input, enable_syscalls).map(|nodes| lift(optimize(nodes, false), false))
     }
 
     /// Like `parse`, but keeps the final state of every cell rather than
     /// only what's observable.
     #[cfg(test)]
     pub fn parse_keeping_tape(input: &str) -> Result<Vec<AstNode>> {
-        Self::parse_raw(input, false).map(|nodes| optimize(nodes, true))
+        Self::parse_raw(input, false).map(|nodes| lift(optimize(nodes, true), true))
+    }
+
+    /// Shift the offsets of a straight-line, `Print` or `Read` node.
+    pub fn shifted(&self, amount: i32) -> Self {
+        match *self {
+            AstNode::Add(o, value) => AstNode::Add(o + amount, value),
+            AstNode::Set(o, value) => AstNode::Set(o + amount, value),
+            AstNode::MulAdd { src, dst, factor } => AstNode::MulAdd {
+                src: src + amount,
+                dst: dst + amount,
+                factor,
+            },
+            AstNode::CondAdd {
+                lhs,
+                rhs,
+                dst,
+                value,
+            } => AstNode::CondAdd {
+                lhs: lhs.shift(amount),
+                rhs: rhs.shift(amount),
+                dst: dst + amount,
+                value,
+            },
+            AstNode::ProductAdd {
+                base,
+                step,
+                count,
+                high,
+                dst,
+                value,
+            } => AstNode::ProductAdd {
+                base: base.shift(amount),
+                step: step.shift(amount),
+                count: count.shift(amount),
+                high,
+                dst: dst + amount,
+                value,
+            },
+            AstNode::Word {
+                dst,
+                len,
+                ref terms,
+                constant,
+            } => AstNode::Word {
+                dst: dst + amount,
+                len,
+                terms: terms
+                    .iter()
+                    .map(|&term| WordTerm {
+                        cell: term.cell + amount,
+                        times: term.times.map(|(cell, len)| (cell + amount, len)),
+                        ..term
+                    })
+                    .collect(),
+                constant,
+            },
+            AstNode::Print(o) => AstNode::Print(o + amount),
+            AstNode::Read(o) => AstNode::Read(o + amount),
+            _ => unreachable!("not a straight-line node: {self:?}"),
+        }
     }
 
     fn parse_raw(input: &str, enable_syscalls: bool) -> Result<Vec<AstNode>> {
@@ -255,6 +365,19 @@ pub fn max_offset(nodes: &[AstNode]) -> u32 {
                 .map(i32::unsigned_abs)
                 .max()
                 .unwrap_or(0),
+            // Terms may be read a few bytes at a time, past their ends.
+            AstNode::Word {
+                dst, len, terms, ..
+            } => terms
+                .iter()
+                .flat_map(|term| {
+                    let times = term.times.map_or(term.cell, |(cell, _)| cell);
+                    [term.cell, term.cell + 7, times, times + 7]
+                })
+                .chain([*dst, dst + i32::from(*len) - 1])
+                .map(i32::unsigned_abs)
+                .max()
+                .unwrap(),
             AstNode::Loop(body) => max_offset(body),
             AstNode::Move(_) | AstNode::Scan(_) | AstNode::Syscall => 0,
         })

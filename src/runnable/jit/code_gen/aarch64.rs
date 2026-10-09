@@ -1,4 +1,8 @@
-use crate::parser::{AstNode, Operand};
+use std::collections::{BTreeMap, HashMap};
+use std::ops::Range;
+
+use super::{Step, accessed_cells, live_cells, steps};
+use crate::parser::{AstNode, Operand, WordTerm};
 use crate::runnable::jit::executable_memory::VTableEntry;
 use crate::runnable::jit::jit_promise::JITPromiseID;
 
@@ -13,12 +17,16 @@ const PTR_SIZE: u32 = 8;
 // x0-x7, x9-x15 - Cached memory cells within straight-line code
 // x8 - Temporary register
 // x16, x17 - Address calculation and temporary registers
+// x30 - Base for distant cells within straight-line code
 // x29 - Frame pointer
 // x30 - Link register
 
 const MEM: u32 = 19;
 const TMP: u32 = 8;
 const ADDR: u32 = 16;
+/// Points near cells far from x19 in straight-line code. It's the link
+/// register, which is saved on entry and free between calls.
+const FAR: u32 = 30;
 /// wzr when used as a store source
 const ZERO: u32 = 31;
 const CACHE_REGS: [u32; 15] = [0, 1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15];
@@ -50,30 +58,40 @@ fn mov_imm(bytes: &mut Vec<u8>, rd: u32, value: i32) {
     }
 }
 
+/// The registers cells can be addressed through with an immediate offset:
+/// x19, and x30 if it points `far` cells away from it.
+fn bases(far: Option<i32>) -> impl Iterator<Item = (u32, i32)> {
+    std::iter::once((MEM, 0)).chain(far.map(|far| (FAR, far)))
+}
+
 /// Load (`ldrb`) or store (`strb`) w`rt` at x19 + offset.
-fn mem_byte(bytes: &mut Vec<u8>, load: bool, rt: u32, offset: i32) {
-    if (0..4096).contains(&offset) {
-        // ldrb/strb wt, [x19, #offset]
-        let op = if load { 0x3940_0000 } else { 0x3900_0000 };
-        emit_u32(bytes, op | (bits(offset, 12) << 10) | (MEM << 5) | rt);
-    } else if (-256..0).contains(&offset) {
-        // ldurb/sturb wt, [x19, #offset]
-        let op = if load { 0x3840_0000 } else { 0x3800_0000 };
-        emit_u32(bytes, op | (bits(offset, 9) << 12) | (MEM << 5) | rt);
-    } else {
-        mov_imm(bytes, ADDR, offset);
-        // ldrb/strb wt, [x19, x16]
-        let op = if load { 0x3860_6800 } else { 0x3820_6800 };
-        emit_u32(bytes, op | (ADDR << 16) | (MEM << 5) | rt);
+fn mem_byte(bytes: &mut Vec<u8>, load: bool, rt: u32, offset: i32, far: Option<i32>) {
+    for (base, origin) in bases(far) {
+        let offset = offset - origin;
+        if (0..4096).contains(&offset) {
+            // ldrb/strb wt, [xbase, #offset]
+            let op = if load { 0x3940_0000 } else { 0x3900_0000 };
+            emit_u32(bytes, op | (bits(offset, 12) << 10) | (base << 5) | rt);
+            return;
+        } else if (-256..0).contains(&offset) {
+            // ldurb/sturb wt, [xbase, #offset]
+            let op = if load { 0x3840_0000 } else { 0x3800_0000 };
+            emit_u32(bytes, op | (bits(offset, 9) << 12) | (base << 5) | rt);
+            return;
+        }
     }
+    mov_imm(bytes, ADDR, offset);
+    // ldrb/strb wt, [x19, x16]
+    let op = if load { 0x3860_6800 } else { 0x3820_6800 };
+    emit_u32(bytes, op | (ADDR << 16) | (MEM << 5) | rt);
 }
 
 fn load_byte(bytes: &mut Vec<u8>, rt: u32, offset: i32) {
-    mem_byte(bytes, true, rt, offset);
+    mem_byte(bytes, true, rt, offset, None);
 }
 
 fn store_byte(bytes: &mut Vec<u8>, rt: u32, offset: i32) {
-    mem_byte(bytes, false, rt, offset);
+    mem_byte(bytes, false, rt, offset, None);
 }
 
 fn callee_save_to_stack(bytes: &mut Vec<u8>) {
@@ -167,11 +185,63 @@ fn callee_restore_from_stack(bytes: &mut Vec<u8>) {
     emit_u32(bytes, 0xa8c1_7bfd);
 }
 
-/// A memory cell held in a register.
+/// movz wd, #value
+fn movz(bytes: &mut Vec<u8>, rd: u32, value: u8) {
+    emit_u32(bytes, 0x5280_0000 | (u32::from(value) << 5) | rd);
+}
+
+/// add wd, wn, #value
+fn add_imm(bytes: &mut Vec<u8>, rd: u32, rn: u32, value: u8) {
+    emit_u32(
+        bytes,
+        0x1100_0000 | (u32::from(value) << 10) | (rn << 5) | rd,
+    );
+}
+
+/// and wd, wn, #0xff
+fn and_byte(bytes: &mut Vec<u8>, rd: u32, rn: u32) {
+    emit_u32(bytes, 0x1200_1c00 | (rn << 5) | rd);
+}
+
+/// lsl wd, wn, #shift  (ubfm wd, wn, #(32 - shift) % 32, #(31 - shift))
+fn lsl(bytes: &mut Vec<u8>, rd: u32, rn: u32, shift: u32) {
+    let rotation = (32 - shift) % 32;
+    let width = 31 - shift;
+    emit_u32(
+        bytes,
+        0x5300_0000 | (rotation << 16) | (width << 10) | (rn << 5) | rd,
+    );
+}
+
+/// cmp wn, #value
+fn cmp_imm(bytes: &mut Vec<u8>, rn: u32, value: u8) {
+    emit_u32(bytes, 0x7100_001f | (u32::from(value) << 10) | (rn << 5));
+}
+
+/// tst wn, #0xff
+fn tst_byte(bytes: &mut Vec<u8>, rn: u32) {
+    emit_u32(bytes, 0x7200_1c1f | (rn << 5));
+}
+
+/// csel wd, wn, wm, cond
+fn csel(bytes: &mut Vec<u8>, cond: u32, rd: u32, rn: u32, rm: u32) {
+    emit_u32(
+        bytes,
+        0x1a80_0000 | (rm << 16) | (cond << 12) | (rn << 5) | rd,
+    );
+}
+
+/// cset wd, cond  (csinc wd, wzr, wzr, !cond)
+fn cset(bytes: &mut Vec<u8>, cond: u32, rd: u32) {
+    emit_u32(bytes, 0x1a9f_07e0 | ((cond ^ 1) << 12) | rd);
+}
+
+/// A memory cell whose value is known, either in a register or as a constant.
 #[derive(Clone, Copy)]
 struct Entry {
-    offset: i32,
-    reg: u32,
+    /// The register allocated to the cell, if any. Cells which aren't known
+    /// constants always have one.
+    reg: Option<u32>,
     /// Whether memory is out of date
     dirty: bool,
     /// The cell's value if it's a known constant
@@ -184,68 +254,149 @@ struct Entry {
 /// Memory cells held in registers during straight-line code.
 #[derive(Default)]
 struct CellCache {
-    /// Least recently used first
-    entries: Vec<Entry>,
+    entries: BTreeMap<i32, Entry>,
+    /// The cell each cache register is allocated to
+    holders: [Option<i32>; CACHE_REGS.len()],
+    /// Indexes of the nodes accessing each cell, and whether they read it
+    accesses: HashMap<i32, Vec<(usize, bool)>>,
+    /// Index of the node being compiled
+    position: usize,
+    /// Where x30 points, relative to x19, if set
+    far: Option<i32>,
 }
 
 impl CellCache {
-    /// Find or allocate the entry for a cell, loading it from memory if `load`
-    /// is set. Returns its index, which stays valid until the next lookup.
-    fn entry(&mut self, bytes: &mut Vec<u8>, offset: i32, load: bool) -> usize {
-        if let Some(index) = self.entries.iter().position(|entry| entry.offset == offset) {
-            let entry = self.entries.remove(index);
-            self.entries.push(entry);
-            return self.entries.len() - 1;
+    /// A cache for compiling `steps` in order, which evicts the cells needed
+    /// furthest in the future when it runs out of registers.
+    fn new(steps: &[Step]) -> Self {
+        let mut cache = Self::default();
+        for (position, step) in steps.iter().enumerate() {
+            let read = !matches!(step, Step::Node(AstNode::Set(..)));
+            for cell in accessed_cells(step) {
+                cache
+                    .accesses
+                    .entry(cell)
+                    .or_default()
+                    .push((position, read));
+            }
         }
+        cache
+    }
 
-        let reg = if self.entries.len() < CACHE_REGS.len() {
-            CACHE_REGS[self.entries.len()]
-        } else {
-            let evicted = self.entries.remove(0);
-            Self::write_back(bytes, evicted);
-            evicted.reg
+    /// Point x30 at the nearest of the given cells which x19 can't address
+    /// with an immediate offset, if any.
+    fn reach(&mut self, bytes: &mut Vec<u8>, cells: impl Iterator<Item = i32>) {
+        if let Some(far) = cells.filter(|cell| !(-256..4096).contains(cell)).min() {
+            add_offset(bytes, FAR, MEM, far);
+            self.far = Some(far);
+        }
+    }
+
+    /// The first access to a cell at or after the current node.
+    fn next_access(&self, offset: i32) -> Option<(usize, bool)> {
+        let accesses = self.accesses.get(&offset)?;
+        let index = accesses.partition_point(|&(position, _)| position < self.position);
+        accesses.get(index).copied()
+    }
+
+    /// Free up a register, preferring the cell whose value is needed furthest
+    /// in the future and then cells which don't have to be stored.
+    fn evict(&mut self, bytes: &mut Vec<u8>) -> usize {
+        let key = |offset: i32| {
+            let entry = self.entries[&offset];
+            let next_read = match self.next_access(offset) {
+                // Cells accessed by the current node are always needed.
+                Some((position, read)) if read || position == self.position => position,
+                // Cells which are overwritten next or never accessed again
+                _ => usize::MAX,
+            };
+            (next_read, entry.constant.is_some() || !entry.dirty)
         };
+        let slot = (0..CACHE_REGS.len())
+            .max_by_key(|&slot| key(self.holders[slot].unwrap()))
+            .unwrap();
 
-        if load {
-            load_byte(bytes, reg, offset);
+        let offset = self.holders[slot].take().unwrap();
+        let overwritten = matches!(self.next_access(offset), Some((_, false)));
+        let entry = self.entries.get_mut(&offset).unwrap();
+        if entry.constant.is_some() {
+            // The constant is still known.
+            entry.reg = None;
+            entry.materialized = false;
+        } else {
+            if entry.dirty && !overwritten {
+                mem_byte(bytes, false, CACHE_REGS[slot], offset, self.far);
+            }
+            self.entries.remove(&offset);
         }
-        self.entries.push(Entry {
+        slot
+    }
+
+    /// Allocate a register to a cell.
+    fn allocate(&mut self, bytes: &mut Vec<u8>, offset: i32) -> u32 {
+        let slot = match self.holders.iter().position(Option::is_none) {
+            Some(slot) => slot,
+            None => self.evict(bytes),
+        };
+        self.holders[slot] = Some(offset);
+        CACHE_REGS[slot]
+    }
+
+    /// Allocate a register to a cell whose value won't be used before it's
+    /// set, without loading it.
+    fn reserve(&mut self, offset: i32) {
+        let reg = self.allocate(&mut Vec::new(), offset);
+        self.entries.insert(
             offset,
-            reg,
-            dirty: false,
-            constant: None,
-            materialized: load,
-        });
-        self.entries.len() - 1
+            Entry {
+                reg: Some(reg),
+                dirty: false,
+                constant: None,
+                materialized: true,
+            },
+        );
     }
 
     /// The known constant value of a cell, without loading it.
     fn constant(&self, offset: i32) -> Option<u8> {
-        self.entries
-            .iter()
-            .find(|entry| entry.offset == offset)
-            .and_then(|entry| entry.constant)
+        self.entries.get(&offset).and_then(|entry| entry.constant)
     }
 
     /// Get a register holding the value of a cell.
     fn read(&mut self, bytes: &mut Vec<u8>, offset: i32) -> u32 {
-        let index = self.entry(bytes, offset, true);
-        let entry = &mut self.entries[index];
-        if !entry.materialized {
-            // movz wreg, #constant
-            emit_u32(
-                bytes,
-                0x5280_0000 | (u32::from(entry.constant.unwrap()) << 5) | entry.reg,
+        let Some(entry) = self.entries.get(&offset).copied() else {
+            let reg = self.allocate(bytes, offset);
+            mem_byte(bytes, true, reg, offset, self.far);
+            self.entries.insert(
+                offset,
+                Entry {
+                    reg: Some(reg),
+                    dirty: false,
+                    constant: None,
+                    materialized: true,
+                },
             );
-            entry.materialized = true;
+            return reg;
+        };
+        if entry.materialized {
+            return entry.reg.unwrap();
         }
-        entry.reg
+
+        let reg = match entry.reg {
+            Some(reg) => reg,
+            None => self.allocate(bytes, offset),
+        };
+        movz(bytes, reg, entry.constant.unwrap());
+        let entry = self.entries.get_mut(&offset).unwrap();
+        entry.reg = Some(reg);
+        entry.materialized = true;
+        reg
     }
 
     /// Get a register holding the value of a cell which is about to be modified.
     fn modify(&mut self, bytes: &mut Vec<u8>, offset: i32) -> u32 {
         let reg = self.read(bytes, offset);
-        let entry = self.entries.last_mut().unwrap();
+        let entry = self.entries.get_mut(&offset).unwrap();
         entry.dirty = true;
         entry.constant = None;
         reg
@@ -253,40 +404,54 @@ impl CellCache {
 
     /// Get a register for a cell which is about to be overwritten.
     fn overwrite(&mut self, bytes: &mut Vec<u8>, offset: i32) -> u32 {
-        let index = self.entry(bytes, offset, false);
-        let entry = &mut self.entries[index];
-        entry.dirty = true;
-        entry.constant = None;
-        entry.materialized = true;
-        entry.reg
+        let reg = match self.entries.get(&offset).and_then(|entry| entry.reg) {
+            Some(reg) => reg,
+            None => self.allocate(bytes, offset),
+        };
+        self.entries.insert(
+            offset,
+            Entry {
+                reg: Some(reg),
+                dirty: true,
+                constant: None,
+                materialized: true,
+            },
+        );
+        reg
     }
 
-    fn set(&mut self, bytes: &mut Vec<u8>, offset: i32, value: u8) {
-        let index = self.entry(bytes, offset, false);
-        let entry = &mut self.entries[index];
-        entry.dirty = true;
-        entry.constant = Some(value);
-        entry.materialized = false;
+    fn set(&mut self, offset: i32, value: u8) {
+        let reg = self.entries.get(&offset).and_then(|entry| entry.reg);
+        self.entries.insert(
+            offset,
+            Entry {
+                reg,
+                dirty: true,
+                constant: Some(value),
+                materialized: false,
+            },
+        );
     }
 
-    fn write_back(bytes: &mut Vec<u8>, entry: Entry) {
+    fn write_back(&self, bytes: &mut Vec<u8>, offset: i32, entry: Entry) {
         if !entry.dirty {
             return;
         }
-        match entry.constant {
-            Some(0) if !entry.materialized => store_byte(bytes, ZERO, entry.offset),
-            Some(value) if !entry.materialized => {
-                // movz wreg, #value
-                emit_u32(bytes, 0x5280_0000 | (u32::from(value) << 5) | entry.reg);
-                store_byte(bytes, entry.reg, entry.offset);
+        let reg = match (entry.constant, entry.reg) {
+            (Some(0), _) if !entry.materialized => ZERO,
+            (Some(value), _) if !entry.materialized => {
+                movz(bytes, TMP, value);
+                TMP
             }
-            _ => store_byte(bytes, entry.reg, entry.offset),
-        }
+            (_, Some(reg)) => reg,
+            _ => unreachable!("cell {offset} has no value"),
+        };
+        mem_byte(bytes, false, reg, offset, self.far);
     }
 
     fn flush(self, bytes: &mut Vec<u8>) {
-        for entry in self.entries {
-            Self::write_back(bytes, entry);
+        for (&offset, &entry) in &self.entries {
+            self.write_back(bytes, offset, entry);
         }
     }
 
@@ -303,17 +468,13 @@ impl CellCache {
         match *node {
             AstNode::Add(offset, value) => {
                 if let Some(constant) = self.constant(offset) {
-                    self.set(bytes, offset, constant.wrapping_add(value));
+                    self.set(offset, constant.wrapping_add(value));
                 } else {
                     let reg = self.modify(bytes, offset);
-                    // add wd, wd, #value
-                    emit_u32(
-                        bytes,
-                        0x1100_0000 | (u32::from(value) << 10) | (reg << 5) | reg,
-                    );
+                    add_imm(bytes, reg, reg, value);
                 }
             }
-            AstNode::Set(offset, value) => self.set(bytes, offset, value),
+            AstNode::Set(offset, value) => self.set(offset, value),
             AstNode::MulAdd { src, dst, factor } => {
                 if let Some(constant) = self.constant(src) {
                     self.node(bytes, &AstNode::Add(dst, constant.wrapping_mul(factor)));
@@ -334,10 +495,24 @@ impl CellCache {
                 value,
             } => {
                 let (lhs, rhs) = (self.fold(lhs), self.fold(rhs));
+                match (lhs.reads(), rhs.reads()) {
+                    (None, None) => {
+                        if lhs.bias < rhs.bias {
+                            self.node(bytes, &AstNode::Add(dst, value));
+                        }
+                        return;
+                    }
+                    // Nothing is greater than 255 or less than 0.
+                    (None, Some(_)) if lhs.bias == u8::MAX => return,
+                    (Some(_), None) if rhs.bias == 0 => return,
+                    _ => {}
+                }
                 let lhs_reg = lhs.reads().map(|cell| self.read(bytes, cell));
                 let rhs_reg = rhs.reads().map(|cell| self.read(bytes, cell));
-                let dst_reg = self.modify(bytes, dst);
-                conditional_add(bytes, (lhs, lhs_reg), (rhs, rhs_reg), dst_reg, value);
+                let dst = self.conditional_dst(bytes, dst);
+                conditional_add(bytes, dst, value, |bytes| {
+                    compare(bytes, (lhs, lhs_reg), (rhs, rhs_reg))
+                });
             }
             AstNode::ProductAdd {
                 base,
@@ -354,93 +529,208 @@ impl CellCache {
                 let dst_reg = self.modify(bytes, dst);
                 product_add(bytes, operands, high, dst_reg, value);
             }
+            AstNode::Word {
+                dst,
+                len,
+                ref terms,
+                constant,
+            } => {
+                // Words are computed in memory.
+                for term in terms {
+                    self.store(bytes, term.reads());
+                }
+                word(bytes, dst, len, terms, constant, self.far);
+                self.forget(dst..dst + i32::from(len));
+            }
             _ => unreachable!("not a straight-line node: {node:?}"),
+        }
+    }
+
+    /// Bring memory up to date for some cells.
+    fn store(&mut self, bytes: &mut Vec<u8>, cells: impl Iterator<Item = i32>) {
+        for cell in cells {
+            if let Some(&entry) = self.entries.get(&cell)
+                && entry.dirty
+            {
+                self.write_back(bytes, cell, entry);
+                self.entries.get_mut(&cell).unwrap().dirty = false;
+            }
+        }
+    }
+
+    /// Drop cells whose values only memory holds now.
+    fn forget(&mut self, cells: Range<i32>) {
+        for cell in cells {
+            self.entries.remove(&cell);
+            if let Some(holder) = self
+                .holders
+                .iter_mut()
+                .find(|holder| **holder == Some(cell))
+            {
+                *holder = None;
+            }
+        }
+    }
+
+    /// Get the register and known constant value of a cell which is about to
+    /// be conditionally added to, for `conditional_add`.
+    fn conditional_dst(&mut self, bytes: &mut Vec<u8>, offset: i32) -> (u32, Option<u8>) {
+        match self.constant(offset) {
+            Some(constant) => (self.overwrite(bytes, offset), Some(constant)),
+            None => (self.modify(bytes, offset), None),
+        }
+    }
+
+    /// Set cells to constants if the counter isn't zero, without branching,
+    /// and then set the counter to zero.
+    fn set_if(&mut self, bytes: &mut Vec<u8>, counter: i32, sets: &[(i32, u8)]) {
+        match self.constant(counter) {
+            Some(0) => {}
+            Some(_) => {
+                for &(offset, value) in sets {
+                    self.set(offset, value);
+                }
+            }
+            None => {
+                let mut regs = Vec::new();
+                for &(offset, value) in sets {
+                    match self.constant(offset) {
+                        Some(constant) if constant == value => {}
+                        Some(constant) => {
+                            regs.push((self.overwrite(bytes, offset), value, Some(constant)));
+                        }
+                        None => regs.push((self.modify(bytes, offset), value, None)),
+                    }
+                }
+                let counter = self.read(bytes, counter);
+
+                tst_byte(bytes, counter);
+                for (reg, value, constant) in regs {
+                    match (constant, value) {
+                        // The result is just the condition, or its inverse.
+                        (Some(0), 1) => cset(bytes, COND_NE, reg),
+                        (Some(1), 0) => cset(bytes, COND_EQ, reg),
+                        _ => {
+                            // Neither of these changes the flags.
+                            if let Some(constant) = constant {
+                                movz(bytes, reg, constant);
+                            }
+                            let src = if value == 0 {
+                                ZERO
+                            } else {
+                                movz(bytes, TMP, value);
+                                TMP
+                            };
+                            csel(bytes, COND_NE, reg, src, reg);
+                        }
+                    }
+                }
+            }
+        }
+        self.set(counter, 0);
+    }
+
+    /// Compile straight-line steps in order.
+    fn compile(&mut self, bytes: &mut Vec<u8>, steps: &[Step]) {
+        for (position, step) in steps.iter().enumerate() {
+            self.position = position;
+            match step {
+                Step::Node(node) => self.node(bytes, node),
+                Step::SetIf { counter, sets } => self.set_if(bytes, *counter, sets),
+            }
         }
     }
 }
 
-/// Whether a node can be part of a run compiled by `straight_line`.
-pub const fn is_straight_line(node: &AstNode) -> bool {
-    matches!(
-        node,
-        AstNode::Add(..)
-            | AstNode::Set(..)
-            | AstNode::MulAdd { .. }
-            | AstNode::CondAdd { .. }
-            | AstNode::ProductAdd { .. }
-    )
-}
-
-/// Compile a run of straight-line nodes. Cells are kept in registers and
-/// written back at the end.
+/// Compile a run of nodes for which `is_straight_line` holds. Cells are kept
+/// in registers and written back at the end, and the data pointer is moved
+/// once.
 pub fn straight_line(bytes: &mut Vec<u8>, nodes: &[AstNode]) {
-    let mut cache = CellCache::default();
-    for node in nodes {
-        cache.node(bytes, node);
-    }
+    let (steps, moved) = steps(nodes);
+    let mut cache = CellCache::new(&steps);
+    cache.reach(bytes, steps.iter().flat_map(accessed_cells));
+    cache.compile(bytes, &steps);
     cache.flush(bytes);
+    if moved != 0 {
+        move_pointer(bytes, moved);
+    }
 }
 
 /// Compile a loop whose body is straight-line code which doesn't move the
-/// data pointer, keeping all cells in registers across iterations. Returns
-/// false if there are too many cells.
+/// data pointer overall, keeping all cells in registers across iterations.
+/// Returns false if there are too many cells.
 pub fn register_loop(bytes: &mut Vec<u8>, nodes: &[AstNode]) -> bool {
-    let mut cells = vec![0];
-    for node in nodes {
-        match *node {
-            AstNode::Add(offset, _) | AstNode::Set(offset, _) => cells.push(offset),
-            AstNode::MulAdd { src, dst, .. } => cells.extend([src, dst]),
-            AstNode::CondAdd { lhs, rhs, dst, .. } => {
-                cells.extend(lhs.reads().into_iter().chain(rhs.reads()).chain([dst]));
-            }
-            AstNode::ProductAdd {
-                base,
-                step,
-                count,
-                dst,
-                ..
-            } => cells.extend(
-                [base, step, count]
-                    .iter()
-                    .filter_map(|o| o.reads())
-                    .chain([dst]),
-            ),
-            _ => unreachable!("not a straight-line node: {node:?}"),
-        }
+    let (steps, moved) = steps(nodes);
+    // Words leave cells in memory, which the body can't do between
+    // iterations.
+    if moved != 0
+        || steps
+            .iter()
+            .any(|step| matches!(step, Step::Node(AstNode::Word { .. })))
+    {
+        return false;
     }
+    let mut cells: Vec<i32> = std::iter::once(0)
+        .chain(steps.iter().flat_map(accessed_cells))
+        .collect();
     cells.sort_unstable();
     cells.dedup();
     if cells.len() > CACHE_REGS.len() {
         return false;
     }
+    let live = live_cells(&cells, &steps);
 
+    // The counter is loaded first, and the other cells only once the loop is
+    // known to run, since many of these loops are conditionals which often
+    // don't.
+    let mut check = Vec::new();
     let mut cache = CellCache::default();
+    let counter = cache.read(&mut check, 0);
+    tst_byte(&mut check, counter);
+    let mut head = Vec::new();
+    cache.reach(&mut head, cells.iter().copied());
     for &cell in &cells {
-        cache.read(bytes, cell);
+        if live.contains(&cell) {
+            cache.read(&mut head, cell);
+        } else {
+            cache.reserve(cell);
+        }
     }
-    let counter = cache.read(bytes, 0);
 
     let mut body = Vec::new();
-    for node in nodes {
-        cache.node(&mut body, node);
+    cache.compile(&mut body, &steps);
+    // A loop which sets its counter runs at most once (or forever), so loading
+    // every cell up front doesn't pay off.
+    if cache.constant(0).is_some() {
+        return false;
     }
-    // Every cell must be in its register at the end of each iteration.
-    for &cell in &cells {
+
+    // Cells used by the next iteration must be in their registers.
+    for &cell in &live {
         cache.read(&mut body, cell);
     }
-    // tst wcounter, #0xff
-    emit_u32(&mut body, 0x7200_1c1f | (counter << 5));
+    tst_byte(&mut body, counter);
 
+    // Write back cells after running the body at least once. Memory is
+    // already up to date if it doesn't run.
+    let mut tail = Vec::new();
+    cache.flush(&mut tail);
+
+    let head_len = i32::try_from(head.len() / 4).unwrap();
     let body_len = i32::try_from(body.len() / 4).unwrap();
-    // tst wcounter, #0xff
-    emit_u32(bytes, 0x7200_1c1f | (counter << 5));
+    let tail_len = i32::try_from(tail.len() / 4).unwrap();
+    bytes.extend(check);
     // b.eq end
-    emit_u32(bytes, 0x5400_0000 | (bits(body_len + 2, 19) << 5));
+    emit_u32(
+        bytes,
+        0x5400_0000 | (bits(head_len + body_len + tail_len + 2, 19) << 5),
+    );
+    bytes.extend(head);
     bytes.extend(body);
     // b.ne start
     emit_u32(bytes, 0x5400_0001 | (bits(-body_len, 19) << 5));
-
-    cache.flush(bytes);
+    bytes.extend(tail);
+    // end:
     true
 }
 
@@ -493,95 +783,139 @@ fn multiply_add(bytes: &mut Vec<u8>, rn: u32, rd: u32, factor: u8) {
     }
 }
 
-// Condition codes
+// Condition codes. Inverting one flips its lowest bit.
+const COND_EQ: u32 = 0b0000;
 const COND_NE: u32 = 0b0001;
+const COND_HS: u32 = 0b0010;
 const COND_LO: u32 = 0b0011;
 const COND_HI: u32 = 0b1000;
 
-/// Compute the byte value of an operand held in register `reg` into `tmp`.
-fn materialize(bytes: &mut Vec<u8>, operand: Operand, reg: u32, tmp: u32) {
-    let mut src = reg;
-    if operand.scale != 1 {
-        // movz wtmp, #scale
-        emit_u32(bytes, 0x5280_0000 | (u32::from(operand.scale) << 5) | tmp);
-        // mul wtmp, wsrc, wtmp
-        emit_u32(bytes, 0x1b00_7c00 | (tmp << 16) | (src << 5) | tmp);
-        src = tmp;
+/// Get a register whose low byte holds the value of an operand which reads
+/// the cell in register `reg`, computing it in `tmp` if needed.
+fn operand_reg(bytes: &mut Vec<u8>, operand: Operand, reg: u32, tmp: u32) -> u32 {
+    let src = match operand.scale {
+        1 => reg,
+        u8::MAX if operand.bias == u8::MAX => {
+            // mvn wtmp, wreg
+            emit_u32(bytes, 0x2a20_03e0 | (reg << 16) | tmp);
+            return tmp;
+        }
+        u8::MAX => {
+            // neg wtmp, wreg
+            emit_u32(bytes, 0x4b00_03e0 | (reg << 16) | tmp);
+            tmp
+        }
+        scale if scale.is_power_of_two() => {
+            lsl(bytes, tmp, reg, scale.trailing_zeros());
+            tmp
+        }
+        scale => {
+            movz(bytes, tmp, scale);
+            // mul wtmp, wreg, wtmp
+            emit_u32(bytes, 0x1b00_7c00 | (tmp << 16) | (reg << 5) | tmp);
+            tmp
+        }
+    };
+    if operand.bias == 0 {
+        return src;
     }
-    if operand.bias != 0 {
-        // add wtmp, wsrc, #bias
-        emit_u32(
-            bytes,
-            0x1100_0000 | (u32::from(operand.bias) << 10) | (src << 5) | tmp,
-        );
-        src = tmp;
-    }
-    // and wtmp, wsrc, #0xff
-    emit_u32(bytes, 0x1200_1c00 | (src << 5) | tmp);
+    add_imm(bytes, tmp, src, operand.bias);
+    tmp
 }
 
-/// wd += value if lhs < rhs. Operands which read a cell come with its register.
-fn conditional_add(
-    bytes: &mut Vec<u8>,
-    lhs: (Operand, Option<u32>),
-    rhs: (Operand, Option<u32>),
-    rd: u32,
-    value: u8,
-) {
-    let cond = match (lhs, rhs) {
-        ((l, None), (r, None)) => {
-            if l.bias < r.bias {
-                // add wd, wd, #value
-                emit_u32(
-                    bytes,
-                    0x1100_0000 | (u32::from(value) << 10) | (rd << 5) | rd,
-                );
-            }
-            return;
-        }
-        ((l, None), (r, Some(reg))) if l.bias == 0 && r.scale == 1 && r.bias == 0 => {
-            // tst wreg, #0xff
-            emit_u32(bytes, 0x7200_1c1f | (reg << 5));
+/// Compute the byte value of an operand held in register `reg` into `tmp`.
+fn materialize(bytes: &mut Vec<u8>, operand: Operand, reg: u32, tmp: u32) {
+    let src = operand_reg(bytes, operand, reg, tmp);
+    and_byte(bytes, tmp, src);
+}
+
+/// Compare `lhs < rhs`, returning the condition code which holds if it's true.
+/// Operands which read a cell come with its register. At least one operand
+/// must read a cell, and a constant `lhs` must be below 255.
+fn compare(bytes: &mut Vec<u8>, lhs: (Operand, Option<u32>), rhs: (Operand, Option<u32>)) -> u32 {
+    match (lhs, rhs) {
+        // 0 < x
+        ((l, None), (r, Some(reg))) if l.bias == 0 && (r.scale, r.bias) == (1, 0) => {
+            tst_byte(bytes, reg);
             COND_NE
+        }
+        // lhs < x + (lhs + 1) <=> the addition doesn't wrap <=> x < 256 - (lhs + 1)
+        ((l, None), (r, Some(reg)))
+            if r.scale == 1 && r.bias != 0 && r.bias == l.bias.wrapping_add(1) =>
+        {
+            and_byte(bytes, ADDR, reg);
+            cmp_imm(bytes, ADDR, r.bias.wrapping_neg());
+            COND_LO
+        }
+        // ~x < rhs <=> adding rhs to x carries <=> x >= 256 - rhs, and
+        // x + rhs < rhs <=> the addition wraps <=> x >= 256 - rhs
+        ((l, Some(reg)), (r, None))
+            if (l.scale, l.bias) == (u8::MAX, u8::MAX) || (l.scale == 1 && l.bias == r.bias) =>
+        {
+            and_byte(bytes, ADDR, reg);
+            cmp_imm(bytes, ADDR, r.bias.wrapping_neg());
+            COND_HS
+        }
+        // ~x < y <=> adding y to x carries, which shows in the carry flag
+        // when both are shifted to the top byte
+        ((l, Some(lreg)), (r, Some(rreg)))
+            if (l.scale, l.bias, r.scale, r.bias) == (u8::MAX, u8::MAX, 1, 0) =>
+        {
+            lsl(bytes, ADDR, lreg, 24);
+            // cmn w16, wrreg, lsl #24
+            emit_u32(bytes, 0x2b00_001f | (rreg << 16) | (24 << 10) | (ADDR << 5));
+            COND_HS
         }
         ((l, None), (r, Some(reg))) => {
             materialize(bytes, r, reg, ADDR);
-            // cmp w16, #lhs
-            emit_u32(bytes, 0x7100_001f | (u32::from(l.bias) << 10) | (ADDR << 5));
+            cmp_imm(bytes, ADDR, l.bias);
             COND_HI
         }
         ((l, Some(reg)), (r, None)) => {
             materialize(bytes, l, reg, ADDR);
-            // cmp w16, #rhs
-            emit_u32(bytes, 0x7100_001f | (u32::from(r.bias) << 10) | (ADDR << 5));
+            cmp_imm(bytes, ADDR, r.bias);
             COND_LO
         }
         ((l, Some(lreg)), (r, Some(rreg))) => {
             materialize(bytes, l, lreg, ADDR);
-            materialize(bytes, r, rreg, ADDR + 1);
-            // cmp w16, w17
-            emit_u32(bytes, 0x6b00_001f | ((ADDR + 1) << 16) | (ADDR << 5));
+            let rreg = operand_reg(bytes, r, rreg, ADDR + 1);
+            // cmp w16, wrreg, uxtb
+            emit_u32(bytes, 0x6b20_001f | (rreg << 16) | (ADDR << 5));
             COND_LO
         }
-    };
+        ((_, None), (_, None)) => unreachable!("comparison of constants"),
+    }
+}
 
-    if value == 1 {
-        // cinc wd, wd, cond  (csinc wd, wd, wd, !cond)
-        emit_u32(
-            bytes,
-            0x1a80_0400 | (rd << 16) | ((cond ^ 1) << 12) | (rd << 5) | rd,
-        );
-    } else {
-        // add w8, wd, #value
-        emit_u32(
-            bytes,
-            0x1100_0000 | (u32::from(value) << 10) | (rd << 5) | TMP,
-        );
-        // csel wd, w8, wd, cond
-        emit_u32(
-            bytes,
-            0x1a80_0000 | (rd << 16) | (cond << 12) | (TMP << 5) | rd,
-        );
+/// wd += value if a condition holds, without branching. `compare` sets the
+/// flags and returns the condition code. `rd` comes with the cell's constant
+/// value if it's known, in which case the register doesn't hold it yet.
+fn conditional_add(
+    bytes: &mut Vec<u8>,
+    (rd, constant): (u32, Option<u8>),
+    value: u8,
+    compare: impl FnOnce(&mut Vec<u8>) -> u32,
+) {
+    let cond = compare(bytes);
+    match (constant, value) {
+        // The result is just the condition, or its inverse.
+        (Some(0), 1) => cset(bytes, cond, rd),
+        (Some(1), u8::MAX) => cset(bytes, cond ^ 1, rd),
+        _ => {
+            if let Some(constant) = constant {
+                movz(bytes, rd, constant);
+            }
+            if value == 1 {
+                // cinc wd, wd, cond  (csinc wd, wd, wd, !cond)
+                emit_u32(
+                    bytes,
+                    0x1a80_0400 | (rd << 16) | ((cond ^ 1) << 12) | (rd << 5) | rd,
+                );
+            } else {
+                add_imm(bytes, TMP, rd, value);
+                csel(bytes, cond, rd, TMP, rd);
+            }
+        }
     }
 }
 
@@ -616,6 +950,128 @@ fn product_add(
         emit_u32(bytes, 0x5300_7c00 | (8 << 16) | (ADDR << 5) | ADDR);
     }
     multiply_add(bytes, ADDR, rd, value);
+}
+
+/// The base register and offset addressing a cell with an unscaled offset,
+/// for accesses of up to 8 bytes. Distant cells are addressed through x16.
+fn address(bytes: &mut Vec<u8>, cell: i32, far: Option<i32>) -> (u32, i32) {
+    if let Some(address) = bases(far)
+        .map(|(base, origin)| (base, cell - origin))
+        .find(|(_, offset)| (-256..=248).contains(offset))
+    {
+        return address;
+    }
+    match far {
+        Some(far) if (0..4096).contains(&(cell - far)) => add_offset(bytes, ADDR, FAR, cell - far),
+        _ => add_offset(bytes, ADDR, MEM, cell),
+    }
+    (ADDR, 0)
+}
+
+/// Load (`ldur`) or store (`stur`) `size` bytes (1, 2, 4 or 8) of x`rt`.
+fn mem_unscaled(bytes: &mut Vec<u8>, load: bool, rt: u32, (base, offset): (u32, i32), size: u8) {
+    let size_bits = match size {
+        1 => 0,
+        2 => 1,
+        4 => 2,
+        8 => 3,
+        _ => unreachable!("invalid access size: {size}"),
+    };
+    let op = if load { 0x3840_0000 } else { 0x3800_0000 };
+    emit_u32(
+        bytes,
+        op | (size_bits << 30) | (bits(offset, 9) << 12) | (base << 5) | rt,
+    );
+}
+
+/// Load the little-endian number in `len` cells from `cell` into x`rd`.
+/// Reads up to 7 cells past the number.
+fn load_word(bytes: &mut Vec<u8>, rd: u32, cell: i32, len: u8, far: Option<i32>) {
+    let address = address(bytes, cell, far);
+    let size = len.next_power_of_two();
+    mem_unscaled(bytes, true, rd, address, size);
+    if size != len {
+        // ubfx xd, xd, #0, #(8 * len)
+        emit_u32(
+            bytes,
+            0xd340_0000 | ((u32::from(len) * 8 - 1) << 10) | (rd << 5) | rd,
+        );
+    }
+}
+
+/// Store the low `len` bytes of x`rs` to the cells from `cell`, shifting x`rs`.
+fn store_word(bytes: &mut Vec<u8>, rs: u32, cell: i32, len: u8, far: Option<i32>) {
+    let (base, mut offset) = address(bytes, cell, far);
+    let mut left = len;
+    while left > 0 {
+        // The largest power of two that fits
+        let size = 1 << (7 - left.leading_zeros());
+        mem_unscaled(bytes, false, rs, (base, offset), size);
+        left -= size;
+        offset += i32::from(size);
+        if left > 0 {
+            // lsr xs, xs, #(8 * size)
+            let shift = u32::from(size) * 8;
+            emit_u32(bytes, 0xd340_fc00 | (shift << 16) | (rs << 5) | rs);
+        }
+    }
+}
+
+/// Load a 64-bit constant into x`rd`.
+fn mov_imm64(bytes: &mut Vec<u8>, rd: u32, value: u64) {
+    // movz xd, #low
+    emit_u32(
+        bytes,
+        0xd280_0000 | (u32::try_from(value & 0xffff).unwrap() << 5) | rd,
+    );
+    for shift in 1..4 {
+        let part = u32::try_from(value >> (16 * shift) & 0xffff).unwrap();
+        if part != 0 {
+            // movk xd, #part, lsl #(16 * shift)
+            emit_u32(bytes, 0xf280_0000 | (shift << 21) | (part << 5) | rd);
+        }
+    }
+}
+
+/// Compute a `Word` node in memory, using x8, x16 and x17.
+fn word(
+    bytes: &mut Vec<u8>,
+    dst: i32,
+    len: u8,
+    terms: &[WordTerm],
+    constant: u64,
+    far: Option<i32>,
+) {
+    // Whether x8 holds the sum of the terms so far
+    let mut sum = constant != 0 || terms.first().is_none_or(|term| term.negate);
+    if sum {
+        mov_imm64(bytes, TMP, constant);
+    }
+    for term in terms {
+        let rd = if sum { ADDR + 1 } else { TMP };
+        load_word(bytes, rd, term.cell, term.len, far);
+        if let Some((cell, len)) = term.times {
+            load_word(bytes, ADDR, cell, len, far);
+            // mul xd, xd, x16
+            emit_u32(bytes, 0x9b00_7c00 | (ADDR << 16) | (rd << 5) | rd);
+        }
+        if term.shift != 0 {
+            // lsr xd, xd, #(8 * shift)
+            let shift = u32::from(term.shift) * 8;
+            emit_u32(bytes, 0xd340_fc00 | (shift << 16) | (rd << 5) | rd);
+        }
+        if sum {
+            // add/sub x8, x8, x17
+            let op = if term.negate {
+                0xcb00_0000
+            } else {
+                0x8b00_0000
+            };
+            emit_u32(bytes, op | ((ADDR + 1) << 16) | (TMP << 5) | TMP);
+        }
+        sum = true;
+    }
+    store_word(bytes, TMP, dst, len, far);
 }
 
 /// Load the little-endian number in `len` cells from `start` into x`rd`,
@@ -710,25 +1166,30 @@ pub fn skip(bytes: &mut Vec<u8>, exits: &[(i32, u8, u8)], steps: &[(i32, u8)]) {
     }
 }
 
-/// Add a value to x19.
-fn add_to_pointer(bytes: &mut Vec<u8>, amount: i32) {
+/// xd = xn + amount, using x16 for big amounts.
+fn add_offset(bytes: &mut Vec<u8>, rd: u32, rn: u32, amount: i32) {
     if (0..4096).contains(&amount) {
-        // add x19, x19, #amount
+        // add xd, xn, #amount
         emit_u32(
             bytes,
-            0x9100_0000 | (bits(amount, 12) << 10) | (MEM << 5) | MEM,
+            0x9100_0000 | (bits(amount, 12) << 10) | (rn << 5) | rd,
         );
     } else if (-4095..0).contains(&amount) {
-        // sub x19, x19, #-amount
+        // sub xd, xn, #-amount
         emit_u32(
             bytes,
-            0xd100_0000 | (bits(-amount, 12) << 10) | (MEM << 5) | MEM,
+            0xd100_0000 | (bits(-amount, 12) << 10) | (rn << 5) | rd,
         );
     } else {
         mov_imm(bytes, ADDR, amount);
-        // add x19, x19, x16
-        emit_u32(bytes, 0x8b00_0000 | (ADDR << 16) | (MEM << 5) | MEM);
+        // add xd, xn, x16
+        emit_u32(bytes, 0x8b00_0000 | (ADDR << 16) | (rn << 5) | rd);
     }
+}
+
+/// Add a value to x19.
+fn add_to_pointer(bytes: &mut Vec<u8>, amount: i32) {
+    add_offset(bytes, MEM, MEM, amount);
 }
 
 pub fn move_pointer(bytes: &mut Vec<u8>, amount: i32) {

@@ -1672,7 +1672,7 @@ fn optimize_block(nodes: Vec<Raw>, mut known: Known, live: &Live) -> Vec<AstNode
                 match optimize_loop(body, &entry, live_after, live_before) {
                     OptimizedLoop::Inline(nodes) => {
                         for node in nodes {
-                            let node = shift(&node, offset);
+                            let node = node.shifted(offset);
                             after_run.push(&node);
                             run.push(node);
                         }
@@ -1699,7 +1699,7 @@ fn optimize_block(nodes: Vec<Raw>, mut known: Known, live: &Live) -> Vec<AstNode
                 after_run = KnownAfterRun::new(known.clone());
             }
             Raw::Node(node) => {
-                let node = shift(&node, offset);
+                let node = node.shifted(offset);
                 after_run.push(&node);
                 run.push(node);
             }
@@ -1710,48 +1710,6 @@ fn optimize_block(nodes: Vec<Raw>, mut known: Known, live: &Live) -> Vec<AstNode
     flush_move(&mut offset, &mut known, &mut output);
 
     output
-}
-
-/// Shift the offsets of a straight-line, `Print` or `Read` node.
-fn shift(node: &AstNode, amount: i32) -> AstNode {
-    match *node {
-        AstNode::Add(o, value) => AstNode::Add(o + amount, value),
-        AstNode::Set(o, value) => AstNode::Set(o + amount, value),
-        AstNode::MulAdd { src, dst, factor } => AstNode::MulAdd {
-            src: src + amount,
-            dst: dst + amount,
-            factor,
-        },
-        AstNode::CondAdd {
-            lhs,
-            rhs,
-            dst,
-            value,
-        } => AstNode::CondAdd {
-            lhs: lhs.shift(amount),
-            rhs: rhs.shift(amount),
-            dst: dst + amount,
-            value,
-        },
-        AstNode::ProductAdd {
-            base,
-            step,
-            count,
-            high,
-            dst,
-            value,
-        } => AstNode::ProductAdd {
-            base: base.shift(amount),
-            step: step.shift(amount),
-            count: count.shift(amount),
-            high,
-            dst: dst + amount,
-            value,
-        },
-        AstNode::Print(o) => AstNode::Print(o + amount),
-        AstNode::Read(o) => AstNode::Read(o + amount),
-        _ => unreachable!("not a straight-line node: {node:?}"),
-    }
 }
 
 #[cfg(test)]

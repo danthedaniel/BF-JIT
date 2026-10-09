@@ -236,7 +236,12 @@ fn sampled_reads(body: &[AstNode], cells: &BTreeSet<i32>, samples: &[Sample]) ->
 
 /// Run nodes accepted by `cells` on a tape, with the data pointer at index
 /// `pointer`.
-fn run(nodes: &[AstNode], tape: &mut [u8], mut pointer: i32, budget: &mut usize) -> Option<()> {
+pub(super) fn run(
+    nodes: &[AstNode],
+    tape: &mut [u8],
+    mut pointer: i32,
+    budget: &mut usize,
+) -> Option<()> {
     let at = |pointer: i32, offset: i32| usize::try_from(pointer + offset).unwrap();
     for node in nodes {
         match *node {
@@ -672,12 +677,12 @@ impl Iteration {
 }
 
 /// A binary decision diagram: an index into `Diagrams::nodes`.
-type Bdd = u32;
-const FALSE: Bdd = 0;
-const TRUE: Bdd = 1;
+pub(super) type Bdd = u32;
+pub(super) const FALSE: Bdd = 0;
+pub(super) const TRUE: Bdd = 1;
 
 /// A number as diagrams for its bits, least significant first.
-type Bits = Vec<Bdd>;
+pub(super) type Bits = Vec<Bdd>;
 
 /// The decision node `if var { high } else { low }`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -696,7 +701,7 @@ enum Op {
 
 /// Reduced ordered binary decision diagrams, so equal functions are the same
 /// diagram. Operations return `None` when there are too many nodes.
-struct Diagrams {
+pub(super) struct Diagrams {
     nodes: Vec<Node>,
     unique: HashMap<Node, Bdd>,
     cache: HashMap<(Op, Bdd, Bdd), Bdd>,
@@ -719,7 +724,7 @@ impl Default for Diagrams {
 }
 
 impl Diagrams {
-    fn var(&mut self, var: u32) -> Option<Bdd> {
+    pub(super) fn var(&mut self, var: u32) -> Option<Bdd> {
         self.node(var, FALSE, TRUE)
     }
 
@@ -861,7 +866,7 @@ impl Diagrams {
     }
 
     /// The sum of two numbers of the same width and a carry, and the carry out.
-    fn add(&mut self, a: &[Bdd], b: &[Bdd], mut carry: Bdd) -> Option<(Bits, Bdd)> {
+    pub(super) fn add(&mut self, a: &[Bdd], b: &[Bdd], mut carry: Bdd) -> Option<(Bits, Bdd)> {
         let mut sum = Vec::with_capacity(a.len());
         for (&a, &b) in a.iter().zip(b) {
             let half = self.xor(a, b)?;
@@ -873,7 +878,7 @@ impl Diagrams {
     }
 
     /// The difference of two numbers of the same width, and whether it wrapped.
-    fn subtract(&mut self, a: &[Bdd], b: &[Bdd]) -> Option<(Bits, Bdd)> {
+    pub(super) fn subtract(&mut self, a: &[Bdd], b: &[Bdd]) -> Option<(Bits, Bdd)> {
         let inverted = b
             .iter()
             .map(|&bit| self.not(bit))
@@ -938,7 +943,7 @@ impl Diagrams {
     }
 
     /// Whether two numbers are equal whenever `condition` holds.
-    fn equal_given(&mut self, condition: Bdd, a: &[Bdd], b: &[Bdd]) -> Option<bool> {
+    pub(super) fn equal_given(&mut self, condition: Bdd, a: &[Bdd], b: &[Bdd]) -> Option<bool> {
         for (&a, &b) in a.iter().zip(b) {
             let differ = self.xor(a, b)?;
             if self.and(condition, differ)? != FALSE {
@@ -950,7 +955,7 @@ impl Diagrams {
 }
 
 /// The bits of a byte.
-fn constant(value: u8) -> Bits {
+pub(super) fn constant(value: u8) -> Bits {
     (0..8)
         .map(|bit| if value & (1 << bit) != 0 { TRUE } else { FALSE })
         .collect()
@@ -958,9 +963,9 @@ fn constant(value: u8) -> Bits {
 
 /// Symbolic execution of a loop body, with cell values as functions of the
 /// cell values before it.
-struct Symbolic<'a> {
-    diagrams: &'a mut Diagrams,
-    cells: BTreeMap<i32, Bits>,
+pub(super) struct Symbolic<'a> {
+    pub(super) diagrams: &'a mut Diagrams,
+    pub(super) cells: BTreeMap<i32, Bits>,
 }
 
 impl Symbolic<'_> {
@@ -989,7 +994,7 @@ impl Symbolic<'_> {
     }
 
     /// Run nodes accepted by `cells` with the data pointer at `pointer`.
-    fn run(&mut self, nodes: &[AstNode], mut pointer: i32) -> Option<()> {
+    pub(super) fn run(&mut self, nodes: &[AstNode], mut pointer: i32) -> Option<()> {
         for node in nodes {
             match *node {
                 AstNode::Add(offset, value) => self.add_to(pointer + offset, &constant(value))?,

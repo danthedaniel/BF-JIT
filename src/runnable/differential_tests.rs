@@ -6,7 +6,7 @@ use super::int::Interpreter;
 #[cfg(feature = "jit")]
 use super::jit::JITTarget;
 use super::test_buffer::TestBuffer;
-use crate::parser::{AstNode, Operand, max_offset};
+use crate::parser::{AstNode, Operand, WordTerm, lift, max_offset};
 
 const TAPE: usize = 64;
 /// Programs start by moving to the middle of the tape so they can move left.
@@ -614,6 +614,9 @@ fn random_nodes(rng: &mut Rng, cells: usize, in_loop: bool) -> Vec<AstNode> {
             AstNode::Move(-counter),
         ];
     }
+    if rng.below(8) == 0 {
+        return vec![random_word(rng, cells, in_loop)];
+    }
     if rng.below(7) == 0 {
         let sum = random_dst(rng, cells, in_loop);
         let addend = random_cell(rng, cells);
@@ -660,6 +663,48 @@ fn random_nodes(rng: &mut Rng, cells: usize, in_loop: bool) -> Vec<AstNode> {
     }]
 }
 
+/// A random little-endian number of up to `max_len` cells around the data
+/// pointer.
+fn random_number(rng: &mut Rng, cells: usize, max_len: u8) -> (i32, u8) {
+    let len = u8::try_from(rng.below(usize::from(max_len).min(cells)) + 1).unwrap();
+    let first = -i32::try_from(cells / 2).unwrap();
+    let last = first + i32::try_from(cells).unwrap() - i32::from(len);
+    let start =
+        first + i32::try_from(rng.below(usize::try_from(last - first + 1).unwrap())).unwrap();
+    (start, len)
+}
+
+/// A random `Word` node, which doesn't write to the loop counter if in a
+/// loop.
+fn random_word(rng: &mut Rng, cells: usize, in_loop: bool) -> AstNode {
+    let (dst, len) = loop {
+        let (dst, len) = random_number(rng, cells, 8);
+        if !in_loop || !(dst..dst + i32::from(len)).contains(&0) {
+            break (dst, len);
+        }
+    };
+    let terms = (0..rng.below(3))
+        .map(|_| {
+            let (cell, len) = random_number(rng, cells, 8);
+            let times = (rng.below(3) == 0 && len < 8).then(|| random_number(rng, cells, 8 - len));
+            let width = len + times.map_or(0, |(_, len)| len);
+            WordTerm {
+                cell,
+                len,
+                times,
+                shift: u8::try_from(rng.below(usize::from(width))).unwrap(),
+                negate: rng.below(2) == 0,
+            }
+        })
+        .collect();
+    AstNode::Word {
+        dst,
+        len,
+        terms,
+        constant: rng.next(),
+    }
+}
+
 /// Random straight-line code on cells read from input, so they aren't known
 /// constants, optionally in a loop.
 #[cfg(feature = "jit")]
@@ -668,7 +713,7 @@ fn straight_line_matches_interpreter() {
     let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
 
     for _ in 0..3000 {
-        let cells = [4, 8, 14][rng.below(3)];
+        let cells = [4, 8, 14, 24][rng.below(4)];
         let mut ast = vec![AstNode::Move(i32::try_from(START).unwrap())];
         let first = -i32::try_from(cells / 2).unwrap();
         ast.extend((first..).take(cells).map(AstNode::Read));
@@ -691,5 +736,234 @@ fn straight_line_matches_interpreter() {
             jit(ast.clone(), &input),
             "{ast:?} {input:?}"
         );
+    }
+}
+
+/// Straight-line code doing arithmetic on 32-bit numbers the way compilers
+/// targeting brainfuck do, a byte at a time.
+mod compiled {
+    use crate::parser::{AstNode, Operand};
+
+    /// `~cell`, as an operand
+    const fn complement(cell: i32) -> Operand {
+        Operand {
+            cell,
+            scale: u8::MAX,
+            bias: u8::MAX,
+        }
+    }
+
+    pub fn copy(nodes: &mut Vec<AstNode>, src: i32, dst: i32) {
+        for i in 0..4 {
+            nodes.push(AstNode::Set(dst + i, 0));
+            nodes.push(AstNode::MulAdd {
+                src: src + i,
+                dst: dst + i,
+                factor: 1,
+            });
+        }
+    }
+
+    pub fn not(nodes: &mut Vec<AstNode>, cell: i32) {
+        for i in 0..4 {
+            nodes.push(AstNode::MulAdd {
+                src: cell + i,
+                dst: cell + i,
+                factor: 254,
+            });
+            nodes.push(AstNode::Add(cell + i, u8::MAX));
+        }
+    }
+
+    /// Add the byte in `addend` to the number from byte `from` of the one in
+    /// `number`, carrying with temporaries `carries`. Clears `addend`.
+    pub fn add_byte(
+        nodes: &mut Vec<AstNode>,
+        number: i32,
+        from: i32,
+        mut addend: i32,
+        [mut carry, mut next]: [i32; 2],
+    ) {
+        for i in from..4 {
+            nodes.push(AstNode::Set(next, 0));
+            nodes.push(AstNode::CondAdd {
+                lhs: complement(number + i),
+                rhs: Operand::cell(addend),
+                dst: next,
+                value: 1,
+            });
+            nodes.push(AstNode::MulAdd {
+                src: addend,
+                dst: number + i,
+                factor: 1,
+            });
+            nodes.push(AstNode::Set(addend, 0));
+            (addend, carry, next) = (next, addend, carry);
+        }
+        let _ = carry;
+    }
+
+    /// number += addend, both 32-bit.
+    pub fn add(nodes: &mut Vec<AstNode>, number: i32, addend: i32, temporaries: [i32; 3]) {
+        let [byte, carries @ ..] = temporaries;
+        for i in 0..4 {
+            nodes.push(AstNode::Set(byte, 0));
+            nodes.push(AstNode::MulAdd {
+                src: addend + i,
+                dst: byte,
+                factor: 1,
+            });
+            add_byte(nodes, number, i, byte, carries);
+        }
+    }
+
+    /// cell = -cell
+    pub fn negate(nodes: &mut Vec<AstNode>, cell: i32, temporaries: [i32; 3]) {
+        not(nodes, cell);
+        let [one, carries @ ..] = temporaries;
+        nodes.push(AstNode::Set(one, 1));
+        add_byte(nodes, cell, 0, one, carries);
+    }
+
+    /// dst = x * y, schoolbook, keeping only the low 32 bits.
+    pub fn multiply(nodes: &mut Vec<AstNode>, x: i32, y: i32, dst: i32, temporaries: [i32; 3]) {
+        let [high, carries @ ..] = temporaries;
+        for i in 0..4 {
+            nodes.push(AstNode::Set(dst + i, 0));
+        }
+        for i in 0..4 {
+            for j in 0..4 - i {
+                let k = dst + i + j;
+                nodes.push(AstNode::Set(high, 0));
+                nodes.push(AstNode::ProductAdd {
+                    base: Operand::cell(k),
+                    step: Operand::cell(x + i),
+                    count: Operand::cell(y + j),
+                    high: true,
+                    dst: high,
+                    value: 1,
+                });
+                nodes.push(AstNode::ProductAdd {
+                    base: Operand::constant(0),
+                    step: Operand::cell(x + i),
+                    count: Operand::cell(y + j),
+                    high: false,
+                    dst: k,
+                    value: 1,
+                });
+                if i + j < 3 {
+                    add_byte(nodes, dst, i + j + 1, high, carries);
+                }
+            }
+        }
+    }
+}
+
+/// Compiled 32-bit arithmetic is lifted to `Word` nodes which leave the same
+/// observable results.
+#[test]
+fn compiled_arithmetic_is_lifted() {
+    use compiled::{add, copy, multiply, negate};
+
+    // x, y and the result are 32-bit numbers, then temporaries.
+    let (x, y, result, copied, sum) = (0, 4, 8, 12, 16);
+    let temporaries = [20, 21, 22];
+    let mut nodes = vec![AstNode::Move(i32::try_from(START).unwrap())];
+    nodes.extend((0..8).map(AstNode::Read));
+    let mut run = Vec::new();
+    copy(&mut run, x, copied);
+    negate(&mut run, copied, temporaries);
+    copy(&mut run, x, sum);
+    add(&mut run, sum, y, temporaries);
+    multiply(&mut run, x, y, result, temporaries);
+    nodes.extend(run);
+    nodes.extend(
+        (copied..sum + 4)
+            .chain(result..result + 4)
+            .map(AstNode::Print),
+    );
+
+    let lifted = lift(nodes.clone(), false);
+    let words = |product: bool| {
+        lifted.iter().any(|node| {
+            matches!(node, AstNode::Word { terms, .. }
+                if terms.iter().any(|term| term.times.is_some() == product))
+        })
+    };
+    assert!(words(false) && words(true), "{lifted:?}");
+    assert!(lifted.len() < nodes.len() / 4, "{lifted:?}");
+
+    let mut rng = Rng(0x2545_f491_4f6c_dd1d);
+    let edges = [0, 1, 2, 127, 128, 254, 255];
+    for _ in 0..2000 {
+        let input: Vec<u8> = (0..8)
+            .map(|_| {
+                if rng.below(2) == 0 {
+                    edges[rng.below(edges.len())]
+                } else {
+                    random_byte(&mut rng)
+                }
+            })
+            .collect();
+        let expected = interpret(nodes.clone(), &input).1;
+        let [x0, x1, x2, x3, y0, y1, y2, y3] = input[..] else {
+            unreachable!()
+        };
+        let (x, y) = (
+            u32::from_le_bytes([x0, x1, x2, x3]),
+            u32::from_le_bytes([y0, y1, y2, y3]),
+        );
+        let reference: Vec<u8> = [x.wrapping_neg(), x.wrapping_add(y), x.wrapping_mul(y)]
+            .iter()
+            .flat_map(|number| number.to_le_bytes())
+            .collect();
+        assert_eq!(expected, reference, "{input:?}");
+        assert_eq!(interpret(lifted.clone(), &input).1, expected, "{input:?}");
+        #[cfg(feature = "jit")]
+        assert_eq!(jit(lifted.clone(), &input).1, expected, "{input:?}");
+    }
+}
+
+/// Code which almost always computes a sum is only lifted if it always does,
+/// whatever the samples guessing it show.
+#[test]
+fn lifting_is_proven() {
+    let (x, sum, flag) = (0, 4, 8);
+    let temporaries = [9, 10, 11];
+    let mut nodes = vec![AstNode::Move(i32::try_from(START).unwrap())];
+    nodes.extend((x..x + 4).map(AstNode::Read));
+    let mut run = Vec::new();
+    // sum = x + 1, plus 1 more in the low byte if it's 200
+    compiled::copy(&mut run, x, sum);
+    run.push(AstNode::Set(temporaries[0], 1));
+    compiled::add_byte(&mut run, sum, 0, temporaries[0], [10, 11]);
+    run.extend([
+        AstNode::Set(flag, 0),
+        AstNode::CondAdd {
+            lhs: Operand::constant(199),
+            rhs: Operand::cell(x),
+            dst: flag,
+            value: 1,
+        },
+        AstNode::CondAdd {
+            lhs: Operand::constant(200),
+            rhs: Operand::cell(x),
+            dst: flag,
+            value: u8::MAX,
+        },
+        AstNode::MulAdd {
+            src: flag,
+            dst: sum,
+            factor: 1,
+        },
+    ]);
+    nodes.extend(run);
+    nodes.extend((sum..sum + 4).map(AstNode::Print));
+
+    let lifted = lift(nodes.clone(), false);
+    for low in [0, 199, 200, 201, 255] {
+        let input = [low, 0, 255, 7];
+        let expected = interpret(nodes.clone(), &input).1;
+        assert_eq!(interpret(lifted.clone(), &input).1, expected, "{lifted:?}");
     }
 }

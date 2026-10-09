@@ -3,7 +3,7 @@ use std::cmp;
 use std::io::{self, Read, Write};
 
 use super::instr::Instr;
-use crate::parser::{AstNode, Operand};
+use crate::parser::{AstNode, Operand, WordTerm};
 use crate::runnable::syscall::{execute_syscall, parse_syscall_args};
 use crate::runnable::{BF_MEMORY_SIZE, Runnable};
 
@@ -85,6 +85,17 @@ impl Interpreter {
                     factor,
                 }),
                 AstNode::Skip { exits, steps } => instrs.push(Instr::Skip { exits, steps }),
+                AstNode::Word {
+                    dst,
+                    len,
+                    terms,
+                    constant,
+                } => instrs.push(Instr::Word {
+                    dst,
+                    len,
+                    terms,
+                    constant,
+                }),
                 AstNode::Move(n) => instrs.push(Instr::Move(n)),
                 AstNode::Print(offset) => instrs.push(Instr::Print(offset)),
                 AstNode::Read(offset) => instrs.push(Instr::Read(offset)),
@@ -183,6 +194,23 @@ impl Interpreter {
         Ok(())
     }
 
+    /// Execute a `Word` instruction.
+    fn word(&mut self, dst: i32, len: u8, terms: &[WordTerm], constant: u64) -> Result<()> {
+        let mut value = constant;
+        for term in terms {
+            let number = self.number(term.cell, term.len)?;
+            let times = term
+                .times
+                .map(|(cell, len)| self.number(cell, len))
+                .transpose()?;
+            value = value.wrapping_add(term.eval(number, times));
+        }
+        for (i, byte) in (0..i32::from(len)).zip(value.to_le_bytes()) {
+            *self.cell(dst + i)? = byte;
+        }
+        Ok(())
+    }
+
     /// Move the data pointer.
     fn shift(&mut self, amount: i32) -> Result<()> {
         self.dp = self
@@ -269,6 +297,12 @@ impl Interpreter {
                 ref exits,
                 ref steps,
             } => self.skip(&exits.clone(), &steps.clone())?,
+            Instr::Word {
+                dst,
+                len,
+                ref terms,
+                constant,
+            } => self.word(dst, len, &terms.clone(), constant)?,
             Instr::Move(n) => self.shift(n)?,
             Instr::Print(offset) => {
                 let value = *self.cell(offset)?;

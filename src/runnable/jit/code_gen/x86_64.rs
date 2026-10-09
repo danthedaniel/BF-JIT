@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, HashMap};
+use std::ops::Range;
 
-use crate::parser::{AstNode, Operand};
+use super::{Step, accessed_cells, live_cells, steps};
+use crate::parser::{AstNode, Operand, WordTerm};
 use crate::runnable::jit::executable_memory::VTableEntry;
 use crate::runnable::jit::jit_promise::JITPromiseID;
 
@@ -618,7 +620,46 @@ impl CellCache {
                 let dst_reg = self.modify(bytes, dst);
                 product_add(bytes, operands, high, dst_reg, value);
             }
+            AstNode::Word {
+                dst,
+                len,
+                ref terms,
+                constant,
+            } => {
+                // Words are computed in memory.
+                for term in terms {
+                    self.store(bytes, term.reads());
+                }
+                word(bytes, dst, len, terms, constant);
+                self.forget(dst..dst + i32::from(len));
+            }
             _ => unreachable!("not a straight-line node: {node:?}"),
+        }
+    }
+
+    /// Bring memory up to date for some cells.
+    fn store(&mut self, bytes: &mut Vec<u8>, cells: impl Iterator<Item = i32>) {
+        for cell in cells {
+            if let Some(entry) = self.entries.get_mut(&cell)
+                && entry.dirty
+            {
+                Self::write_back(bytes, cell, *entry);
+                entry.dirty = false;
+            }
+        }
+    }
+
+    /// Drop cells whose values only memory holds now.
+    fn forget(&mut self, cells: Range<i32>) {
+        for cell in cells {
+            self.entries.remove(&cell);
+            if let Some(holder) = self
+                .holders
+                .iter_mut()
+                .find(|holder| **holder == Some(cell))
+            {
+                *holder = None;
+            }
         }
     }
 
@@ -744,114 +785,6 @@ impl CellCache {
     }
 }
 
-/// A straight-line operation, with offsets relative to the data pointer at
-/// the start of its run.
-enum Step {
-    /// An `Add`, `Set`, `MulAdd`, `CondAdd` or `ProductAdd` node
-    Node(AstNode),
-    /// A loop which only sets cells, including its counter to 0, so it runs at
-    /// most once
-    SetIf { counter: i32, sets: Vec<(i32, u8)> },
-}
-
-/// The most cells (other than the counter) a loop compiled as a
-/// `Step::SetIf` may set.
-const MAX_SET_IF_CELLS: usize = 4;
-
-/// The cells (other than the counter) and values set by a loop which only sets
-/// cells and runs at most once.
-fn set_if_cells(body: &[AstNode]) -> Option<Vec<(i32, u8)>> {
-    let mut sets: Vec<(i32, u8)> = Vec::new();
-    for node in body {
-        let AstNode::Set(offset, value) = *node else {
-            return None;
-        };
-        sets.retain(|&(cell, _)| cell != offset);
-        sets.push((offset, value));
-    }
-    if !sets.contains(&(0, 0)) {
-        return None;
-    }
-    sets.retain(|&(cell, _)| cell != 0);
-    (sets.len() <= MAX_SET_IF_CELLS).then_some(sets)
-}
-
-/// Whether a node can be part of a run compiled by `straight_line`.
-pub fn is_straight_line(node: &AstNode) -> bool {
-    match node {
-        AstNode::Add(..)
-        | AstNode::Set(..)
-        | AstNode::MulAdd { .. }
-        | AstNode::CondAdd { .. }
-        | AstNode::ProductAdd { .. }
-        | AstNode::Move(_) => true,
-        AstNode::Loop(body) => set_if_cells(body).is_some(),
-        _ => false,
-    }
-}
-
-/// A straight-line node with its offsets moved by `amount`.
-fn shifted(node: &AstNode, amount: i32) -> AstNode {
-    match *node {
-        AstNode::Add(offset, value) => AstNode::Add(offset + amount, value),
-        AstNode::Set(offset, value) => AstNode::Set(offset + amount, value),
-        AstNode::MulAdd { src, dst, factor } => AstNode::MulAdd {
-            src: src + amount,
-            dst: dst + amount,
-            factor,
-        },
-        AstNode::CondAdd {
-            lhs,
-            rhs,
-            dst,
-            value,
-        } => AstNode::CondAdd {
-            lhs: lhs.shift(amount),
-            rhs: rhs.shift(amount),
-            dst: dst + amount,
-            value,
-        },
-        AstNode::ProductAdd {
-            base,
-            step,
-            count,
-            high,
-            dst,
-            value,
-        } => AstNode::ProductAdd {
-            base: base.shift(amount),
-            step: step.shift(amount),
-            count: count.shift(amount),
-            high,
-            dst: dst + amount,
-            value,
-        },
-        _ => unreachable!("not a straight-line node: {node:?}"),
-    }
-}
-
-/// Convert a run of straight-line nodes into steps relative to the data
-/// pointer at its start, returning them with the run's pointer movement.
-fn steps(nodes: &[AstNode]) -> (Vec<Step>, i32) {
-    let mut moved = 0;
-    let mut steps = Vec::new();
-    for node in nodes {
-        match node {
-            AstNode::Move(amount) => moved += amount,
-            AstNode::Loop(body) => steps.push(Step::SetIf {
-                counter: moved,
-                sets: set_if_cells(body)
-                    .unwrap()
-                    .into_iter()
-                    .map(|(offset, value)| (offset + moved, value))
-                    .collect(),
-            }),
-            node => steps.push(Step::Node(shifted(node, moved))),
-        }
-    }
-    (steps, moved)
-}
-
 /// Compile a run of nodes for which `is_straight_line` holds. Cells are kept
 /// in registers and written back at the end, and the data pointer is moved
 /// once.
@@ -865,46 +798,18 @@ pub fn straight_line(bytes: &mut Vec<u8>, nodes: &[AstNode]) {
     }
 }
 
-/// The cells a straight-line step accesses.
-fn accessed_cells(step: &Step) -> Vec<i32> {
-    let node = match step {
-        Step::Node(node) => node,
-        Step::SetIf { counter, sets } => {
-            return std::iter::once(*counter)
-                .chain(sets.iter().map(|&(offset, _)| offset))
-                .collect();
-        }
-    };
-    match *node {
-        AstNode::Add(offset, _) | AstNode::Set(offset, _) => vec![offset],
-        AstNode::MulAdd { src, dst, .. } => vec![src, dst],
-        AstNode::CondAdd { lhs, rhs, dst, .. } => lhs
-            .reads()
-            .into_iter()
-            .chain(rhs.reads())
-            .chain([dst])
-            .collect(),
-        AstNode::ProductAdd {
-            base,
-            step,
-            count,
-            dst,
-            ..
-        } => [base, step, count]
-            .iter()
-            .filter_map(|operand| operand.reads())
-            .chain([dst])
-            .collect(),
-        _ => unreachable!("not a straight-line node: {node:?}"),
-    }
-}
-
 /// Compile a loop whose body is straight-line code which doesn't move the
 /// data pointer overall, keeping all cells in registers across iterations.
 /// Returns false if there are too many cells.
 pub fn register_loop(bytes: &mut Vec<u8>, nodes: &[AstNode]) -> bool {
     let (steps, moved) = steps(nodes);
-    if moved != 0 {
+    // Words leave cells in memory, which the body can't do between
+    // iterations.
+    if moved != 0
+        || steps
+            .iter()
+            .any(|step| matches!(step, Step::Node(AstNode::Word { .. })))
+    {
         return false;
     }
     let mut cells: Vec<i32> = std::iter::once(0)
@@ -916,21 +821,7 @@ pub fn register_loop(bytes: &mut Vec<u8>, nodes: &[AstNode]) -> bool {
         return false;
     }
 
-    // Cells whose value at the start of an iteration is used, rather than
-    // being set first
-    let live: Vec<i32> = cells
-        .iter()
-        .copied()
-        .filter(|&cell| {
-            cell == 0
-                || !matches!(
-                    steps
-                        .iter()
-                        .find(|step| accessed_cells(step).contains(&cell)),
-                    Some(Step::Node(AstNode::Set(..)))
-                )
-        })
-        .collect();
+    let live = live_cells(&cells, &steps);
 
     let mut head = Vec::new();
     let mut cache = CellCache::default();
@@ -1162,6 +1053,100 @@ fn product_add(
         bytes.push(8);
     }
     multiply_add(bytes, TMP, rd, value);
+}
+
+/// Load the little-endian number in `len` cells from `cell` into r`reg`,
+/// which is rax, rcx or rdx. Reads up to 7 cells past the number.
+fn load_word(bytes: &mut Vec<u8>, reg: u8, cell: i32, len: u8) {
+    match len.next_power_of_two() {
+        // movzx e<reg>, byte [r10 + cell]
+        1 => mem_op(bytes, &[0x0f, 0xb6], reg, cell, false),
+        // movzx e<reg>, word [r10 + cell]
+        2 => mem_op(bytes, &[0x0f, 0xb7], reg, cell, false),
+        // mov e<reg>, dword [r10 + cell]
+        4 => mem_op(bytes, &[0x8b], reg, cell, false),
+        // mov r<reg>, qword [r10 + cell]
+        _ => {
+            bytes.push(0x49);
+            bytes.push(0x8b);
+            cell_operand(bytes, reg, cell);
+        }
+    }
+    match len {
+        // and e<reg>, 0xffffff
+        3 => {
+            reg_op(bytes, &[0x81], 4, reg, false);
+            bytes.extend_from_slice(&0x00ff_ffff_u32.to_le_bytes());
+        }
+        5..=7 => {
+            // shl r<reg>, 64 - 8 * len
+            // shr r<reg>, 64 - 8 * len
+            let shift = 64 - 8 * len;
+            bytes.extend_from_slice(&[0x48, 0xc1, 0xe0 | reg, shift]);
+            bytes.extend_from_slice(&[0x48, 0xc1, 0xe8 | reg, shift]);
+        }
+        _ => {}
+    }
+}
+
+/// Store the low `len` bytes of rax in the cells from `cell`, shifting rax.
+fn store_word(bytes: &mut Vec<u8>, cell: i32, len: u8) {
+    let mut offset = cell;
+    let mut left = len;
+    while left > 0 {
+        // The largest power of two that fits
+        let size: u8 = 1 << (7 - left.leading_zeros());
+        match size {
+            // mov byte [r10 + offset], al
+            1 => mem_op(bytes, &[0x88], RAX, offset, false),
+            // mov word [r10 + offset], ax
+            2 => {
+                bytes.push(0x66);
+                mem_op(bytes, &[0x89], RAX, offset, false);
+            }
+            // mov dword [r10 + offset], eax
+            4 => mem_op(bytes, &[0x89], RAX, offset, false),
+            // mov qword [r10 + offset], rax
+            _ => {
+                bytes.push(0x49);
+                bytes.push(0x89);
+                cell_operand(bytes, RAX, offset);
+            }
+        }
+        left -= size;
+        offset += i32::from(size);
+        if left > 0 {
+            // shr rax, 8 * size
+            bytes.extend_from_slice(&[0x48, 0xc1, 0xe8, 8 * size]);
+        }
+    }
+}
+
+/// Compute a `Word` node in memory, using rax, rcx and rdx (which is saved).
+fn word(bytes: &mut Vec<u8>, dst: i32, len: u8, terms: &[WordTerm], constant: u64) {
+    // mov rax, constant
+    bytes.extend_from_slice(&[0x48, 0xb8]);
+    bytes.extend_from_slice(&constant.to_le_bytes());
+    for term in terms {
+        load_word(bytes, RCX, term.cell, term.len);
+        if let Some((cell, len)) = term.times {
+            // push rdx
+            bytes.push(0x52);
+            load_word(bytes, RDX, cell, len);
+            // imul rcx, rdx
+            bytes.extend_from_slice(&[0x48, 0x0f, 0xaf, 0xca]);
+            // pop rdx
+            bytes.push(0x5a);
+        }
+        if term.shift != 0 {
+            // shr rcx, 8 * shift
+            bytes.extend_from_slice(&[0x48, 0xc1, 0xe9, 8 * term.shift]);
+        }
+        // add/sub rax, rcx
+        let op = if term.negate { 0x29 } else { 0x01 };
+        bytes.extend_from_slice(&[0x48, op, 0xc8]);
+    }
+    store_word(bytes, dst, len);
 }
 
 /// Load the little-endian number in `len` cells from `start` into rax

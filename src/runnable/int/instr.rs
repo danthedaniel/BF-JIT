@@ -1,4 +1,4 @@
-use crate::parser::Operand;
+use crate::parser::{Operand, WordTerm};
 
 /// brainfuck instruction
 ///
@@ -41,6 +41,13 @@ pub enum Instr {
     Skip {
         exits: Box<[(i32, u8, u8)]>,
         steps: Box<[(i32, u8)]>,
+    },
+    /// Set a multi-byte number to a sum of others and a constant.
+    Word {
+        dst: i32,
+        len: u8,
+        terms: Box<[WordTerm]>,
+        constant: u64,
     },
     /// Shift the data pointer.
     Move(i32),
